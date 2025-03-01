@@ -1,0 +1,23 @@
+{
+  "name": "minecraft",
+  "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "start": "bun run build.ts && bun run server.ts",
+    "build": "bun run build.ts",
+    "dev": "bun run --watch server.ts",
+    "generate-textures": "bun run src/utils/TextureAtlasGenerator.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^20.11.0",
+    "@types/three": "^0.160.0"
+  },
+  "dependencies": {
+    "simplex-noise": "^4.0.1",
+    "three": "0.160.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
