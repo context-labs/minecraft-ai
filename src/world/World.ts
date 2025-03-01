@@ -157,59 +157,116 @@ export class World {
         // Set the block in the chunk
         chunk.setBlock(localX, localY, localZ, type);
         
-        // Mark the chunk as dirty to rebuild its mesh
+        // Mark this chunk as dirty
         chunk.markDirty();
         
-        // If we're mining a block (changing to AIR), we need to be more aggressive
-        // about updating chunks to ensure visibility is correctly updated
-        if (type === BlockType.AIR) {
-            // Update this chunk and all adjacent chunks
-            for (let dx = -1; dx <= 1; dx++) {
-                for (let dy = -1; dy <= 1; dy++) {
-                    for (let dz = -1; dz <= 1; dz++) {
-                        const neighborChunk = this.getChunk(chunkX + dx, chunkY + dy, chunkZ + dz);
-                        if (neighborChunk) {
-                            neighborChunk.markDirty();
-                        }
-                    }
-                }
-            }
-            return;
-        }
-        
-        // For non-air blocks, just check adjacent chunks if needed
-        // Check if we're on a chunk boundary and need to update adjacent chunks
+        // Whether the block is on a chunk boundary
         const isOnXBoundary = localX === 0 || localX === CHUNK_SIZE - 1;
         const isOnYBoundary = localY === 0 || localY === CHUNK_SIZE - 1;
         const isOnZBoundary = localZ === 0 || localZ === CHUNK_SIZE - 1;
         
-        // If we're on a chunk boundary, update adjacent chunks
-        if (isOnXBoundary || isOnYBoundary || isOnZBoundary) {
-            // Update adjacent chunks if needed
-            if (isOnXBoundary) {
+        // CRITICAL FIX: Always update adjacent chunks when mining a block
+        // This ensures that faces are properly shown when blocks are removed
+        if (type === BlockType.AIR || isOnXBoundary || isOnYBoundary || isOnZBoundary) {
+            // Get the 6 directly adjacent chunks (not diagonals)
+            const adjacentChunks: Chunk[] = [];
+            
+            // Add the main chunk
+            adjacentChunks.push(chunk);
+            
+            // Add the 6 directly adjacent chunks if they exist
+            if (localX === 0) {
                 const leftChunk = this.getChunk(chunkX - 1, chunkY, chunkZ);
-                if (leftChunk) leftChunk.markDirty();
-                
+                if (leftChunk) adjacentChunks.push(leftChunk);
+            }
+            
+            if (localX === CHUNK_SIZE - 1) {
                 const rightChunk = this.getChunk(chunkX + 1, chunkY, chunkZ);
-                if (rightChunk) rightChunk.markDirty();
+                if (rightChunk) adjacentChunks.push(rightChunk);
             }
             
-            if (isOnYBoundary) {
+            if (localY === 0) {
                 const bottomChunk = this.getChunk(chunkX, chunkY - 1, chunkZ);
-                if (bottomChunk) bottomChunk.markDirty();
-                
-                const topChunk = this.getChunk(chunkX, chunkY + 1, chunkZ);
-                if (topChunk) topChunk.markDirty();
+                if (bottomChunk) adjacentChunks.push(bottomChunk);
             }
             
-            if (isOnZBoundary) {
-                const frontChunk = this.getChunk(chunkX, chunkY, chunkZ - 1);
-                if (frontChunk) frontChunk.markDirty();
-                
-                const backChunk = this.getChunk(chunkX, chunkY, chunkZ + 1);
-                if (backChunk) backChunk.markDirty();
+            if (localY === CHUNK_SIZE - 1) {
+                const topChunk = this.getChunk(chunkX, chunkY + 1, chunkZ);
+                if (topChunk) adjacentChunks.push(topChunk);
             }
+            
+            if (localZ === 0) {
+                const frontChunk = this.getChunk(chunkX, chunkY, chunkZ - 1);
+                if (frontChunk) adjacentChunks.push(frontChunk);
+            }
+            
+            if (localZ === CHUNK_SIZE - 1) {
+                const backChunk = this.getChunk(chunkX, chunkY, chunkZ + 1);
+                if (backChunk) adjacentChunks.push(backChunk);
+            }
+            
+            // For air blocks (mining), we need to update a slightly larger area
+            // but don't go overboard with a huge radius
+            if (type === BlockType.AIR) {
+                // If this block is at a corner of a chunk, make sure diagonal chunks get updated too
+                if ((localX === 0 || localX === CHUNK_SIZE - 1) && 
+                    (localZ === 0 || localZ === CHUNK_SIZE - 1)) {
+                    // Add the diagonal chunk
+                    const dx = localX === 0 ? -1 : 1;
+                    const dz = localZ === 0 ? -1 : 1;
+                    const diagonalChunk = this.getChunk(chunkX + dx, chunkY, chunkZ + dz);
+                    if (diagonalChunk) adjacentChunks.push(diagonalChunk);
+                }
+                
+                // Also handle edge cases (edges but not corners)
+                if (localX === 0 || localX === CHUNK_SIZE - 1) {
+                    if (localY === 0 || localY === CHUNK_SIZE - 1) {
+                        // XY-diagonal chunk
+                        const dx = localX === 0 ? -1 : 1;
+                        const dy = localY === 0 ? -1 : 1;
+                        const diagChunk = this.getChunk(chunkX + dx, chunkY + dy, chunkZ);
+                        if (diagChunk) adjacentChunks.push(diagChunk);
+                    }
+                }
+                
+                if (localZ === 0 || localZ === CHUNK_SIZE - 1) {
+                    if (localY === 0 || localY === CHUNK_SIZE - 1) {
+                        // ZY-diagonal chunk
+                        const dz = localZ === 0 ? -1 : 1;
+                        const dy = localY === 0 ? -1 : 1;
+                        const diagChunk = this.getChunk(chunkX, chunkY + dy, chunkZ + dz);
+                        if (diagChunk) adjacentChunks.push(diagChunk);
+                    }
+                }
+                
+                // Handle triple corner case (a block at the corner of 8 chunks)
+                if ((localX === 0 || localX === CHUNK_SIZE - 1) && 
+                    (localY === 0 || localY === CHUNK_SIZE - 1) && 
+                    (localZ === 0 || localZ === CHUNK_SIZE - 1)) {
+                    const dx = localX === 0 ? -1 : 1;
+                    const dy = localY === 0 ? -1 : 1;
+                    const dz = localZ === 0 ? -1 : 1;
+                    const cornerChunk = this.getChunk(chunkX + dx, chunkY + dy, chunkZ + dz);
+                    if (cornerChunk) adjacentChunks.push(cornerChunk);
+                }
+            }
+            
+            // Mark all these chunks as dirty
+            adjacentChunks.forEach(chunk => chunk.markDirty());
+            
+            // Now update all affected chunks
+            // This is the key fix - we mark all chunks dirty first, THEN update them all
+            // This ensures consistent state when chunks query each other
+            adjacentChunks.forEach(chunk => chunk.update());
         }
+    }
+    
+    // This method ensures all pending block data is consistent before rebuilding meshes
+    private flushBlockUpdates(): void {
+        // This is a synchronization point to ensure block data is consistent
+        // For now it's a no-op since our updates are already synchronous,
+        // but it provides a hook for more complex scenarios in the future
+        console.log("Flushing block updates to ensure consistency");
     }
     
     public raycast(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number = 10): { position: THREE.Vector3, normal: THREE.Vector3, blockType: BlockType } | null {
