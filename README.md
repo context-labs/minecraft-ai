@@ -1,8 +1,8 @@
 # Minecraft Clone with Three.js
 
-A voxel-based Minecraft clone built using Three.js and TypeScript.
+A voxel-based Minecraft clone built using Three.js and TypeScript. View demo [here](https://x.com/0xSamHogan/status/1895954338876703115).
 
-![Minecraft Clone Screenshot](screenshot.png)
+![Minecraft Clone Screenshot](/public/images/demo.png)
 
 ## Features
 
@@ -18,15 +18,15 @@ A voxel-based Minecraft clone built using Three.js and TypeScript.
 
 ## Prerequisites
 
-- Node.js (v14 or higher)
-- Bun or npm
+- [Bun](https://bun.sh/) (recommended)
+- Modern web browser with WebGL support
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd minecraft-clone
+git clone https://github.com/context-labs/minecraft-ai
+cd minecraft-ai
 ```
 
 2. Install dependencies:
@@ -38,12 +38,11 @@ npm install
 
 ## Running the Game
 
-1. Start the development server:
+1. Build and start the server:
 ```bash
 bun start
-# or
-npm start
 ```
+This command will build the project and start the server.
 
 2. Open your browser and navigate to `http://localhost:3000`
 
@@ -53,16 +52,19 @@ For development with hot reloading:
 
 ```bash
 bun dev
-# or
-npm run dev
+```
+This will start the development server with automatic reloading when files change.
+
+To build the project without starting the server:
+
+```bash
+bun build
 ```
 
 To generate the texture atlas:
 
 ```bash
 bun generate-textures
-# or
-npm run generate-textures
 ```
 
 ## Project Structure
@@ -74,8 +76,6 @@ minecraft-clone/
 │   └── textures/          # Game textures
 │       └── atlas.png      # Texture atlas
 ├── src/
-│   ├── core/              # Core game engine
-│   │   └── Engine.ts      # Main game engine
 │   ├── player/            # Player-related code
 │   │   └── Player.ts      # Player controller
 │   ├── ui/                # User interface
@@ -110,7 +110,6 @@ minecraft-clone/
 
 The game is built using the following components:
 
-- **Engine**: Main game engine that manages the scene, camera, and game loop
 - **World**: Manages chunks and terrain generation
 - **Chunk**: Represents a 16x16x16 section of blocks
 - **Block**: Defines different block types and their properties
@@ -120,11 +119,11 @@ The game is built using the following components:
 
 ## Technical Notes
 
-- The project uses Three.js as a dependency installed via npm
-- Custom PointerLockControls implementation for better compatibility
-- Fallback texture generation if atlas.png is not available
-- Debug logging added to help diagnose rendering issues
-- Enhanced lighting with ambient and directional lights
+- The project uses Three.js for 3D rendering
+- Custom PointerLockControls implementation for camera control
+- Optimized chunk rendering with geometry instancing
+- Collision detection for player movement
+- Raycasting for block selection and interaction
 
 ## Performance Considerations
 
