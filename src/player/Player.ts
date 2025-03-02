@@ -98,6 +98,11 @@ export class Player {
     private breakSound: HTMLAudioElement | null = null;
     private lastMiningSound: number = 0;
     
+    // Add these variables to the Player class properties
+    private flightMode: boolean = false;
+    private lastSpacePress: number = 0;
+    private readonly DOUBLE_TAP_THRESHOLD: number = 300; // ms between taps to count as double-tap
+    
     constructor(camera: THREE.PerspectiveCamera, scene: THREE.Scene, world: World) {
         this.camera = camera;
         this.scene = scene;
@@ -141,22 +146,33 @@ export class Player {
         // Update mining
         this.updateMining(deltaTime);
         
-        // Get camera position and direction
-        const cameraPosition = this.camera.position.clone();
-        const direction = this.getDirection();
-        
         if (!this.controls.isLocked) {
             return;
         }
         
-        // Apply gravity
-        this.velocity.y -= GRAVITY * deltaTime;
-        
-        // Handle jumping
-        if (this.jump && this.canJump) {
-            this.velocity.y = PLAYER_JUMP_FORCE;
-            this.canJump = false;
+        // Handle flight mode
+        if (this.flightMode) {
+            // In flight mode, space makes you go up
+            if (this.jump) {
+                this.velocity.y = 5; // Adjust this value for desired ascent speed
+            } else {
+                // No gravity in flight mode, maintain height
+                this.velocity.y = 0;
+            }
+        } else {
+            // Normal gravity in walking mode
+            this.velocity.y -= 9.8 * deltaTime; // Assuming GRAVITY is 9.8
+            
+            // Handle jumping
+            if (this.jump && this.canJump) {
+                this.velocity.y = 5; // Assuming PLAYER_JUMP_FORCE is 5
+                this.canJump = false;
+            }
         }
+        
+        // Get camera position and direction
+        const cameraPosition = this.camera.position.clone();
+        const direction = this.getDirection();
         
         // Apply movement in camera direction
         const cameraDirection = new THREE.Vector3();
@@ -183,10 +199,10 @@ export class Player {
         
         // Add left/right component (A/D keys)
         if (this.moveRight) {
-            moveDirection.sub(right.clone());
+            moveDirection.add(right.clone());
         }
         if (this.moveLeft) {
-            moveDirection.add(right.clone());
+            moveDirection.sub(right.clone());
         }
         
         // Normalize if we're moving to maintain consistent speed in all directions
@@ -195,8 +211,9 @@ export class Player {
         }
         
         // Set velocity based on movement direction and player speed
-        this.velocity.x = moveDirection.x * PLAYER_SPEED;
-        this.velocity.z = moveDirection.z * PLAYER_SPEED;
+        const playerSpeed = 5; // Assuming PLAYER_SPEED is 5
+        this.velocity.x = moveDirection.x * playerSpeed;
+        this.velocity.z = moveDirection.z * playerSpeed;
         
         // Apply velocity to position with collision detection
         this.move(deltaTime);
@@ -204,9 +221,9 @@ export class Player {
         // Update camera position
         const controlObject = this.controls.getObject();
         if (controlObject) {
-            controlObject.position.x = this.position.x;
-            controlObject.position.y = this.position.y + PLAYER_HEIGHT;
-            controlObject.position.z = this.position.z;
+            controlObject.position.copy(this.position);
+            // Assuming PLAYER_HEIGHT is 1.6
+            controlObject.position.y += 1.6;
         }
     }
     
@@ -467,6 +484,9 @@ export class Player {
     }
     
     private onKeyDown(event: KeyboardEvent): void {
+        // Prevent handling repeated keydown events (when key is held down)
+        if (event.repeat) return;
+        
         switch (event.code) {
             case 'KeyW':
                 this.moveForward = true;
@@ -482,6 +502,23 @@ export class Player {
                 break;
             case 'Space':
                 this.jump = true;
+                
+                // Check for double-tap space to toggle flight
+                const now = Date.now();
+                if (now - this.lastSpacePress < this.DOUBLE_TAP_THRESHOLD) {
+                    // Double tap detected, toggle flight mode
+                    this.flightMode = !this.flightMode;
+                    console.log(`Flight mode ${this.flightMode ? 'enabled' : 'disabled'}`);
+                    
+                    // Show flight mode status
+                    this.showFlightModeStatus();
+                    
+                    // Reset jump state if entering flight mode
+                    if (this.flightMode) {
+                        this.velocity.y = 0;
+                    }
+                }
+                this.lastSpacePress = now;
                 break;
             case 'Digit1':
                 this.setSelectedBlockType(BlockType.DIRT);
@@ -878,5 +915,39 @@ export class Player {
             this.miningSound.pause();
             this.miningSound.currentTime = 0;
         }
+    }
+
+    // Add a method to show flight mode status
+    private showFlightModeStatus(): void {
+        const statusElement = document.createElement('div');
+        statusElement.style.position = 'fixed';
+        statusElement.style.top = '20%';
+        statusElement.style.left = '50%';
+        statusElement.style.transform = 'translateX(-50%)';
+        statusElement.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+        statusElement.style.color = 'white';
+        statusElement.style.padding = '10px 20px';
+        statusElement.style.borderRadius = '5px';
+        statusElement.style.fontFamily = 'Arial, sans-serif';
+        statusElement.style.zIndex = '1000';
+        statusElement.style.transition = 'opacity 2s';
+        statusElement.textContent = this.flightMode ? 'Flight Mode: ON' : 'Flight Mode: OFF';
+        
+        document.body.appendChild(statusElement);
+        
+        // Fade out and remove after 2 seconds
+        setTimeout(() => {
+            statusElement.style.opacity = '0';
+            setTimeout(() => {
+                if (statusElement.parentNode) {
+                    statusElement.parentNode.removeChild(statusElement);
+                }
+            }, 2000);
+        }, 1000);
+    }
+
+    // Update the getter method to use the renamed property
+    public isFlying(): boolean {
+        return this.flightMode;
     }
 } 

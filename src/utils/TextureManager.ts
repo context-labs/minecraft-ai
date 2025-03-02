@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { BlockType, Block } from '../world/Block';
 
 export interface TextureCoordinates {
     left: number;
@@ -436,5 +437,29 @@ export class TextureManager {
     public loadFromCanvas(canvas: HTMLCanvasElement): void {
         this.textureAtlas = new THREE.CanvasTexture(canvas);
         this.configureTexture(this.textureAtlas);
+    }
+    
+    public getBlockMaterials(): Record<string, THREE.Material> {
+        const materials: Record<string, THREE.Material> = {};
+        
+        // Create materials for each block type
+        for (let type = 0; type < Object.keys(BlockType).length / 2; type++) {
+            if (type === BlockType.AIR) continue; // Skip air blocks
+            
+            const blockData = Block.getBlockData(type as BlockType);
+            
+            // Create a standard material that can receive shadows
+            const material = new THREE.MeshStandardMaterial({
+                map: this.textureAtlas,
+                transparent: blockData.transparent,
+                opacity: blockData.transparent ? 0.8 : 1.0,
+                side: blockData.transparent ? THREE.DoubleSide : THREE.FrontSide
+            });
+            
+            // Add to materials dictionary
+            materials[type] = material;
+        }
+        
+        return materials;
     }
 } 

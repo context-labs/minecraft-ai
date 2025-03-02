@@ -23,6 +23,7 @@ window.addEventListener('load', () => {
         <h2>Minecraft Clone</h2>
         <p>Click anywhere to start</p>
         <p>WASD to move, Space to jump</p>
+        <p>Double-tap Space to toggle flight mode</p>
         <p>Left click to break blocks</p>
         <p>Right click to place blocks</p>
         <p>1-6 to select blocks, or scroll wheel</p>
