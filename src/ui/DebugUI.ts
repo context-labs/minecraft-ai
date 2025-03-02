@@ -24,6 +24,7 @@ export class DebugUI {
         const position = this.player.getPosition();
         const direction = this.player.getDirection();
         const selectedBlock = this.player.getSelectedBlockType();
+        const flightMode = this.player.isFlying();
         
         // Format position with 2 decimal places
         const posX = position.x.toFixed(2);
@@ -38,13 +39,20 @@ export class DebugUI {
         // Get block name
         const blockName = this.getBlockName(selectedBlock);
         
+        // Create flight mode status with highlighting
+        const flightStatus = flightMode 
+            ? '<span style="color: #00ff00; font-weight: bold;">FLIGHT MODE: ON</span>' 
+            : 'Flight Mode: OFF';
+        
         // Update debug info
         this.debugElement.innerHTML = `
             FPS: ${this.fpsCounter.getFPS()}<br>
             Position: ${posX}, ${posY}, ${posZ}<br>
             Direction: ${dirX}, ${dirY}, ${dirZ}<br>
             Selected Block: ${blockName}<br>
+            ${flightStatus}<br>
             Controls: WASD = Move, Space = Jump, Mouse = Look<br>
+            Double-tap Space = Toggle Flight<br>
             Left Click = Break, Right Click = Place<br>
             1-6 = Select Block, Scroll = Cycle Blocks<br>
             ESC = Release Mouse
