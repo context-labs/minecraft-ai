@@ -2,16 +2,19 @@ import * as THREE from 'three';
 import { Player } from '../player/Player';
 import { World } from '../world/World';
 import { BlockType } from '../world/Block';
+import { SkySystem } from '../world/SkySystem';
 
 export class DebugUI {
     private player: Player;
     private world: World;
+    private skySystem: SkySystem;
     private debugElement: HTMLElement | null;
     private fpsCounter: FPSCounter;
     
-    constructor(player: Player, world: World) {
+    constructor(player: Player, world: World, skySystem: SkySystem) {
         this.player = player;
         this.world = world;
+        this.skySystem = skySystem;
         this.debugElement = document.getElementById('debug-info');
         this.fpsCounter = new FPSCounter();
     }
@@ -25,6 +28,11 @@ export class DebugUI {
         const direction = this.player.getDirection();
         const selectedBlock = this.player.getSelectedBlockType();
         const flightMode = this.player.isFlying();
+        
+        // Get time information
+        const timeOfDay = this.skySystem.getTimeOfDay();
+        const formattedTime = this.skySystem.getFormattedTime();
+        const dayCount = this.skySystem.getDayCount();
         
         // Format position with 2 decimal places
         const posX = position.x.toFixed(2);
@@ -44,6 +52,14 @@ export class DebugUI {
             ? '<span style="color: #00ff00; font-weight: bold;">FLIGHT MODE: ON</span>' 
             : 'Flight Mode: OFF';
         
+        // Create time display with day/night indicator
+        let timeStatus = `Time: ${formattedTime} (Day ${dayCount})`;
+        if (timeOfDay >= 0.25 && timeOfDay < 0.75) {
+            timeStatus = `<span style="color: #ffcc00;">☀️ ${timeStatus}</span>`;
+        } else {
+            timeStatus = `<span style="color: #aaaaff;">🌙 ${timeStatus}</span>`;
+        }
+        
         // Update debug info
         this.debugElement.innerHTML = `
             FPS: ${this.fpsCounter.getFPS()}<br>
@@ -51,6 +67,7 @@ export class DebugUI {
             Direction: ${dirX}, ${dirY}, ${dirZ}<br>
             Selected Block: ${blockName}<br>
             ${flightStatus}<br>
+            ${timeStatus}<br>
             Controls: WASD = Move, Space = Jump, Mouse = Look<br>
             Double-tap Space = Toggle Flight<br>
             Left Click = Break, Right Click = Place<br>

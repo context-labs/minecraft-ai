@@ -39,6 +39,7 @@ export class World {
     private noise2D: (x: number, y: number) => number;
     private noise3D: (x: number, y: number, z: number) => number;
     private biomeNoise: (x: number, y: number) => number;
+    private blockMaterials: Record<string, THREE.Material>;
     
     // Ore configurations
     private oreConfigs: OreConfig[] = [
@@ -77,8 +78,25 @@ export class World {
         this.noise3D = createNoise3D();
         this.biomeNoise = createNoise2D();
         
+        // Get block materials from texture manager
+        this.blockMaterials = this.textureManager.getBlockMaterials();
+        
         // Add lighting
         this.setupLighting();
+        
+        // Enable shadows on block materials
+        for (const material of Object.values(this.blockMaterials)) {
+            // These properties don't exist on Material directly
+            // We'll need to set them when creating the actual meshes instead
+            
+            // For MeshBasicMaterial and similar materials, we can set some properties
+            // that affect shadow appearance
+            if (material instanceof THREE.MeshStandardMaterial || 
+                material instanceof THREE.MeshPhongMaterial ||
+                material instanceof THREE.MeshLambertMaterial) {
+                material.shadowSide = THREE.FrontSide;
+            }
+        }
     }
     
     public generate(): void {
@@ -743,5 +761,43 @@ export class World {
     private getBiome(x: number, z: number): BiomeType {
         const biomeValue = this.biomeNoise(x * BIOME_SCALE, z * BIOME_SCALE);
         return this.getBiomeFromNoise(biomeValue);
+    }
+    
+    private createChunkMesh(chunk: Chunk): THREE.Mesh {
+        // Get the geometry and materials from the chunk
+        const geometry = new THREE.BufferGeometry();
+        
+        // Create buffer attributes for positions, normals, uvs
+        const positions: number[] = [];
+        const normals: number[] = [];
+        const uvs: number[] = [];
+        const indices: number[] = [];
+        
+        // Build the geometry data
+        // This would typically be done by iterating through blocks in the chunk
+        // and adding faces for visible blocks
+        
+        // Set buffer attributes
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+        geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        geometry.setIndex(indices);
+        
+        // Get materials from texture manager
+        const materialRecord = this.textureManager.getBlockMaterials();
+        
+        // Convert the material record to an array or use a single material
+        // Option 1: Use a single material (e.g., the first one)
+        const material = Object.values(materialRecord)[0] || new THREE.MeshStandardMaterial();
+        
+        // Option 2: Use an array of materials (if you need multiple materials)
+        // const materials = Object.values(materialRecord);
+        
+        // Create the mesh with a single material
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        
+        return mesh;
     }
 } 

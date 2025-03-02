@@ -15,6 +15,8 @@ A voxel-based Minecraft clone built using Three.js and TypeScript. View demo [he
 - Hotbar for block selection
 - Debug information display
 - Lighting system with shadows
+- Dynamic day-night cycle with sun and moon
+- Flight mode (double-tap space to toggle)
 
 ## Prerequisites
 

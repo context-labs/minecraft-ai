@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { World } from '../world/World';
 import { Player } from '../player/Player';
 import { DebugUI } from '../ui/DebugUI';
+import { SkySystem } from '../world/SkySystem';
 
 export class Engine {
     private scene: THREE.Scene;
@@ -10,6 +11,7 @@ export class Engine {
     private world: World;
     private player: Player;
     private debugUI: DebugUI;
+    private skySystem: SkySystem;
     private clock: THREE.Clock;
     private isRunning: boolean = false;
 
@@ -18,7 +20,6 @@ export class Engine {
         
         // Initialize Three.js components
         this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x87CEEB); // Sky blue background
         
         this.camera = new THREE.PerspectiveCamera(
             75, // Field of view
@@ -30,7 +31,12 @@ export class Engine {
         this.renderer = new THREE.WebGLRenderer({ antialias: true });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(window.devicePixelRatio);
+        this.renderer.shadowMap.enabled = true;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         document.body.appendChild(this.renderer.domElement);
+        
+        console.log('Initializing SkySystem...');
+        this.skySystem = new SkySystem(this.scene);
         
         console.log('Initializing World...');
         // Initialize game components
@@ -40,7 +46,7 @@ export class Engine {
         this.player = new Player(this.camera, this.scene, this.world);
         
         console.log('Initializing DebugUI...');
-        this.debugUI = new DebugUI(this.player, this.world);
+        this.debugUI = new DebugUI(this.player, this.world, this.skySystem);
         
         // Initialize clock for frame rate independent movement
         this.clock = new THREE.Clock();
@@ -78,6 +84,7 @@ export class Engine {
         const deltaTime = this.clock.getDelta();
         
         // Update game components
+        this.skySystem.update(deltaTime);
         this.player.update(deltaTime);
         this.world.update(deltaTime, this.player.getPosition());
         this.debugUI.update();
