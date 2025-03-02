@@ -1,0 +1,25 @@
+# Version control
+.git
+.gitignore
+
+# Dependencies
+node_modules
+dist
+
+# Environment variables
+.env
+.env.*
+
+# IDE specific files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS specific files
+.DS_Store
+Thumbs.db 
