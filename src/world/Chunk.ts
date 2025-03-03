@@ -21,7 +21,7 @@ export type GetNeighborBlockCallback = (worldX: number, worldY: number, worldZ: 
 
 export class Chunk {
     private blocks: Uint8Array;
-    private mesh: THREE.Mesh | null = null;
+    private mesh: THREE.Object3D | null = null;
     private isDirty: boolean = true;
     private position: THREE.Vector3;
     private worldPosition: THREE.Vector3;
@@ -98,41 +98,34 @@ export class Chunk {
 
     public dispose(): void {
         if (this.mesh) {
-            try {
-                // Remove from scene
-                this.scene.remove(this.mesh);
-                
-                // Dispose of geometry
-                if (this.mesh.geometry) {
-                    this.mesh.geometry.dispose();
-                }
-                
-                // Dispose of materials
-                if (Array.isArray(this.mesh.material)) {
-                    this.mesh.material.forEach(material => {
-                        if (material) {
-                            // Check if material has a map property (like MeshBasicMaterial)
-                            const matWithMap = material as THREE.MeshBasicMaterial;
-                            if (matWithMap.map) matWithMap.map.dispose();
-                            material.dispose();
+            this.scene.remove(this.mesh);
+            
+            // Dispose of all child meshes
+            if (this.mesh.children.length > 0) {
+                this.mesh.children.forEach(child => {
+                    if (child instanceof THREE.Mesh) {
+                        // Dispose of geometry
+                        if (child.geometry) {
+                            child.geometry.dispose();
                         }
-                    });
-                } else if (this.mesh.material) {
-                    // Check if material has a map property (like MeshBasicMaterial)
-                    const matWithMap = this.mesh.material as THREE.MeshBasicMaterial;
-                    if (matWithMap.map) matWithMap.map.dispose();
-                    this.mesh.material.dispose();
-                }
-                
-                // Clear mesh reference
-                this.mesh = null;
-            } catch (error) {
-                console.error(`Error disposing chunk at (${this.position.x}, ${this.position.y}, ${this.position.z}):`, error);
+                        
+                        // Dispose of materials
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(material => {
+                                if (material) material.dispose();
+                            });
+                        } else if (child.material) {
+                            child.material.dispose();
+                        }
+                    }
+                });
             }
+            
+            this.mesh = null;
         }
         
-        // Mark as dirty to ensure it gets rebuilt if reused
-        this.isDirty = true;
+        // Clear block data
+        this.blocks = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE);
     }
 
     private isOutOfBounds(x: number, y: number, z: number): boolean {
@@ -174,12 +167,25 @@ export class Chunk {
 
     private rebuildMesh(): void {
         try {
-            // Create geometry for the chunk
-            const geometry = new THREE.BufferGeometry();
-            const positions: number[] = [];
-            const normals: number[] = [];
-            const uvs: number[] = [];
-            const indices: number[] = [];
+            // Create separate geometries for opaque and transparent blocks
+            const opaqueGeometry = new THREE.BufferGeometry();
+            const transparentGeometry = new THREE.BufferGeometry();
+            
+            // Arrays for opaque blocks
+            const opaquePositions: number[] = [];
+            const opaqueNormals: number[] = [];
+            const opaqueUvs: number[] = [];
+            const opaqueIndices: number[] = [];
+            
+            // Arrays for transparent blocks
+            const transparentPositions: number[] = [];
+            const transparentNormals: number[] = [];
+            const transparentUvs: number[] = [];
+            const transparentIndices: number[] = [];
+            
+            let blockCount = 0;
+            let opaqueFaceCount = 0;
+            let transparentFaceCount = 0;
             
             // For each block in the chunk
             for (let y = 0; y < CHUNK_SIZE; y++) {
@@ -192,27 +198,35 @@ export class Chunk {
                             continue;
                         }
                         
+                        blockCount++;
+                        
                         // Get block data
                         const blockData = Block.getBlockData(blockType);
+                        const isTransparent = Block.isTransparent(blockType);
+                        
+                        // Choose the appropriate arrays based on block transparency
+                        const positions = isTransparent ? transparentPositions : opaquePositions;
+                        const normals = isTransparent ? transparentNormals : opaqueNormals;
+                        const uvs = isTransparent ? transparentUvs : opaqueUvs;
+                        const indices = isTransparent ? transparentIndices : opaqueIndices;
                         
                         // Check each face of the block
-                        for (let d = 0; d < DIRECTIONS.length; d++) {
-                            const dir = DIRECTIONS[d];
-                            const nx = x + dir[0];
-                            const ny = y + dir[1];
-                            const nz = z + dir[2];
+                        for (let d = 0; d < 6; d++) {
+                            // Get position of neighboring block
+                            const nx = x + DIRECTIONS[d][0];
+                            const ny = y + DIRECTIONS[d][1];
+                            const nz = z + DIRECTIONS[d][2];
                             
-                            // Get neighbor block type (either in this chunk or from neighboring chunks)
+                            // Get the type of the neighboring block
                             const neighborType = this.getNeighborBlock(nx, ny, nz);
                             
-                            // ULTRA SIMPLE FACE VISIBILITY LOGIC:
-                            
-                            // 1. If neighbor is AIR, always show the face
+                            // 1. If neighbor is air, show the face
                             if (neighborType === BlockType.AIR) {
                                 this.addFace(
                                     positions, normals, uvs, indices,
                                     x, y, z, d, blockData.texture
                                 );
+                                isTransparent ? transparentFaceCount++ : opaqueFaceCount++;
                                 continue;
                             }
                             
@@ -222,78 +236,129 @@ export class Chunk {
                                     positions, normals, uvs, indices,
                                     x, y, z, d, blockData.texture
                                 );
+                                isTransparent ? transparentFaceCount++ : opaqueFaceCount++;
                                 continue;
                             }
                             
                             // 3. If both blocks are transparent, show face between them too
-                            // (this helps with water, glass, etc.)
-                            if (Block.isTransparent(blockType)) {
+                            if (isTransparent) {
                                 this.addFace(
                                     positions, normals, uvs, indices,
                                     x, y, z, d, blockData.texture
                                 );
+                                transparentFaceCount++;
                             }
                         }
                     }
                 }
             }
             
+            // Log mesh statistics
+            console.log(`Chunk at (${this.position.x}, ${this.position.y}, ${this.position.z}) has ${blockCount} blocks, ${opaqueFaceCount} opaque faces, and ${transparentFaceCount} transparent faces`);
+            
             // If there are no faces to render, remove any existing mesh and return
-            if (positions.length === 0) {
+            if (opaqueFaceCount === 0 && transparentFaceCount === 0) {
                 if (this.mesh) {
                     this.scene.remove(this.mesh);
-                    if (this.mesh.geometry) {
-                        this.mesh.geometry.dispose();
+                    
+                    // Dispose of materials and geometry
+                    if (this.mesh.children.length > 0) {
+                        this.mesh.children.forEach(child => {
+                            if (child instanceof THREE.Mesh) {
+                                if (child.material) child.material.dispose();
+                                if (child.geometry) child.geometry.dispose();
+                            }
+                        });
                     }
+                    
                     this.mesh = null;
                 }
                 return;
             }
             
-            // Set geometry attributes
-            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-            geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-            geometry.setIndex(indices);
+            // Create a group to hold both opaque and transparent meshes
+            const group = new THREE.Group();
             
-            // Dispose of old geometry if it exists
-            if (this.mesh && this.mesh.geometry) {
-                this.mesh.geometry.dispose();
+            // Set up opaque geometry if there are opaque faces
+            if (opaqueFaceCount > 0) {
+                opaqueGeometry.setAttribute('position', new THREE.Float32BufferAttribute(opaquePositions, 3));
+                opaqueGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(opaqueNormals, 3));
+                opaqueGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(opaqueUvs, 2));
+                opaqueGeometry.setIndex(opaqueIndices);
+                opaqueGeometry.computeBoundingSphere();
+                
+                // Create material for opaque blocks
+                const opaqueMaterial = new THREE.MeshLambertMaterial({
+                    map: this.textureManager.getTextureAtlas(),
+                    transparent: false,
+                    side: THREE.FrontSide,
+                    depthWrite: true,
+                    depthTest: true
+                });
+                
+                // Create mesh for opaque blocks
+                const opaqueMesh = new THREE.Mesh(opaqueGeometry, opaqueMaterial);
+                opaqueMesh.position.set(
+                    this.worldPosition.x,
+                    this.worldPosition.y,
+                    this.worldPosition.z
+                );
+                group.add(opaqueMesh);
             }
             
-            // Create material with better transparency settings
-            const material = new THREE.MeshLambertMaterial({
-                map: this.textureManager.getTextureAtlas(),
-                transparent: true,
-                alphaTest: 0.1, // Lower alphaTest value to avoid missing faces
-                side: THREE.DoubleSide, // Use DoubleSide to ensure all faces are visible
-                depthWrite: true,
-                depthTest: true
-            });
+            // Set up transparent geometry if there are transparent faces
+            if (transparentFaceCount > 0) {
+                transparentGeometry.setAttribute('position', new THREE.Float32BufferAttribute(transparentPositions, 3));
+                transparentGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(transparentNormals, 3));
+                transparentGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(transparentUvs, 2));
+                transparentGeometry.setIndex(transparentIndices);
+                transparentGeometry.computeBoundingSphere();
+                
+                // Create material for transparent blocks
+                const transparentMaterial = new THREE.MeshLambertMaterial({
+                    map: this.textureManager.getTextureAtlas(),
+                    transparent: true,
+                    alphaTest: 0.1,
+                    side: THREE.DoubleSide,
+                    depthWrite: false, // Important for correct transparency rendering
+                    depthTest: true
+                });
+                
+                // Create mesh for transparent blocks
+                const transparentMesh = new THREE.Mesh(transparentGeometry, transparentMaterial);
+                transparentMesh.position.set(
+                    this.worldPosition.x,
+                    this.worldPosition.y,
+                    this.worldPosition.z
+                );
+                group.add(transparentMesh);
+            }
             
             // Remove old mesh from scene
             if (this.mesh) {
                 this.scene.remove(this.mesh);
                 
                 // Dispose of materials
-                if (Array.isArray(this.mesh.material)) {
-                    this.mesh.material.forEach(mat => {
-                        if (mat) mat.dispose();
+                if (this.mesh.children.length > 0) {
+                    this.mesh.children.forEach(child => {
+                        if (child instanceof THREE.Mesh) {
+                            if (child.material) child.material.dispose();
+                            if (child.geometry) child.geometry.dispose();
+                        }
                     });
-                } else if (this.mesh.material) {
-                    this.mesh.material.dispose();
                 }
             }
             
-            // Create new mesh
-            this.mesh = new THREE.Mesh(geometry, material);
-            this.mesh.position.copy(this.worldPosition);
+            // Add the group to the scene
+            this.scene.add(group);
             
-            // Add to scene
-            this.scene.add(this.mesh);
+            // Store the group as the mesh
+            this.mesh = group;
             
+            // Mark chunk as clean
+            this.isDirty = false;
         } catch (error) {
-            console.error(`Error rebuilding mesh for chunk at (${this.position.x}, ${this.position.y}, ${this.position.z}):`, error);
+            console.error('Error rebuilding chunk mesh:', error);
         }
     }
 
@@ -381,5 +446,27 @@ export class Chunk {
             vertexCount, vertexCount + 1, vertexCount + 2,
             vertexCount, vertexCount + 2, vertexCount + 3
         );
+    }
+
+    // Count the number of non-AIR blocks in the chunk
+    public countNonAirBlocks(): number {
+        let count = 0;
+        for (let y = 0; y < CHUNK_SIZE; y++) {
+            for (let z = 0; z < CHUNK_SIZE; z++) {
+                for (let x = 0; x < CHUNK_SIZE; x++) {
+                    if (this.getBlock(x, y, z) !== BlockType.AIR) {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+    
+    // Build the mesh immediately for initial loading
+    public buildInitialMesh(): void {
+        console.log(`Building initial mesh for chunk at (${this.position.x}, ${this.position.y}, ${this.position.z})`);
+        this.rebuildMesh();
+        this.isDirty = false;
     }
 } 

@@ -4,10 +4,9 @@ import { Chunk, CHUNK_SIZE, BLOCK_SIZE } from './Chunk';
 import { BlockType } from './Block';
 import { TextureManager } from '../utils/TextureManager';
 import { NetworkManager } from '../core/NetworkManager';
+import { WorldGenerator, RENDER_DISTANCE, WORLD_HEIGHT } from './WorldGenerator';
 
 // Constants for world generation
-const RENDER_DISTANCE = 8; // Chunks
-const WORLD_HEIGHT = 4; // Chunks
 const TERRAIN_SCALE = 0.01;
 const BIOME_SCALE = 0.005;
 const CAVE_SCALE = 0.03;
@@ -41,6 +40,10 @@ export class World {
     private noise3D: (x: number, y: number, z: number) => number;
     private biomeNoise: (x: number, y: number) => number;
     private networkManager?: NetworkManager;
+    private worldGenerator: WorldGenerator;
+    private pendingBlockUpdates: Map<string, BlockType> = new Map();
+    private lastUpdateTime: number = 0;
+    private _isInitialized: boolean = false;
     
     // Ore configurations
     private oreConfigs: OreConfig[] = [
@@ -67,12 +70,10 @@ export class World {
         }
     ];
     
-    constructor(scene: THREE.Scene) {
+    constructor(scene: THREE.Scene, textureManager: TextureManager) {
         this.scene = scene;
-        this.textureManager = new TextureManager();
-        
-        // TextureManager constructor already tries to load the atlas.png
-        // and creates a fallback if it fails
+        this.textureManager = textureManager;
+        this.worldGenerator = new WorldGenerator();
         
         // Initialize noise functions
         this.noise2D = createNoise2D();
@@ -83,20 +84,45 @@ export class World {
         this.setupLighting();
     }
     
-    public generate(): void {
-        console.log('Generating chunks around origin...');
+    // Set the network manager after it's been initialized
+    public setNetworkManager(networkManager: NetworkManager): void {
+        this.networkManager = networkManager;
+    }
+    
+    // Initialize the world with blocks from the server
+    public initializeFromServer(worldBlocks: Array<{position: {x: number, y: number, z: number}, blockType: BlockType}>): void {
+        console.log(`Initializing world from server with ${worldBlocks.length} blocks`);
+        
+        // Create a map of block positions to types
+        const blockMap = new Map<string, BlockType>();
+        for (const block of worldBlocks) {
+            const key = `${block.position.x},${block.position.y},${block.position.z}`;
+            blockMap.set(key, block.blockType);
+        }
+        
+        console.log(`Starting chunk generation with ${blockMap.size} unique block positions`);
+        const startTime = performance.now();
+        
         // Generate chunks around origin
         for (let x = -RENDER_DISTANCE; x <= RENDER_DISTANCE; x++) {
             for (let z = -RENDER_DISTANCE; z <= RENDER_DISTANCE; z++) {
                 for (let y = 0; y < WORLD_HEIGHT; y++) {
-                    this.generateChunk(x, y, z);
+                    this.generateChunkFromServer(x, y, z, blockMap);
                 }
             }
         }
-        console.log(`Generated ${this.chunks.size} chunks`);
+        
+        const endTime = performance.now();
+        const duration = ((endTime - startTime) / 1000).toFixed(2);
+        console.log(`Generated ${this.chunks.size} chunks from server data in ${duration}s`);
+        console.log(`World initialization complete, chunks should now be visible`);
+        this._isInitialized = true;
     }
     
     public update(deltaTime: number, playerPosition: THREE.Vector3): void {
+        // Don't update if not initialized
+        if (!this._isInitialized) return;
+        
         // Convert player position to chunk coordinates
         const chunkX = Math.floor(playerPosition.x / (CHUNK_SIZE * BLOCK_SIZE));
         const chunkY = Math.floor(playerPosition.y / (CHUNK_SIZE * BLOCK_SIZE));
@@ -109,6 +135,9 @@ export class World {
         
         // Load/unload chunks based on player position
         this.updateChunks(chunkX, chunkY, chunkZ);
+        
+        // Process any pending block updates
+        this.flushBlockUpdates();
     }
     
     public getBlock(x: number, y: number, z: number): BlockType {
@@ -270,10 +299,30 @@ export class World {
     
     // This method ensures all pending block data is consistent before rebuilding meshes
     private flushBlockUpdates(): void {
-        // This is a synchronization point to ensure block data is consistent
-        // For now it's a no-op since our updates are already synchronous,
-        // but it provides a hook for more complex scenarios in the future
-        console.log("Flushing block updates to ensure consistency");
+        // Skip if there are no pending updates
+        if (this.pendingBlockUpdates.size === 0) {
+            return;
+        }
+        
+        console.log(`Processing ${this.pendingBlockUpdates.size} pending block updates`);
+        
+        // Process all pending block updates
+        for (const [key, blockType] of this.pendingBlockUpdates.entries()) {
+            // Parse the key to get the coordinates
+            const [x, y, z] = key.split(',').map(Number);
+            
+            // Set the block without broadcasting (to avoid network loops)
+            this.setBlock(x, y, z, blockType, false);
+        }
+        
+        // Clear the pending updates
+        this.pendingBlockUpdates.clear();
+    }
+    
+    // Add a method to queue block updates from the network
+    public queueBlockUpdate(x: number, y: number, z: number, type: BlockType): void {
+        const key = `${x},${y},${z}`;
+        this.pendingBlockUpdates.set(key, type);
     }
     
     public raycast(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number = 10): { position: THREE.Vector3, normal: THREE.Vector3, blockType: BlockType } | null {
@@ -750,5 +799,62 @@ export class World {
     private getBiome(x: number, z: number): BiomeType {
         const biomeValue = this.biomeNoise(x * BIOME_SCALE, z * BIOME_SCALE);
         return this.getBiomeFromNoise(biomeValue);
+    }
+    
+    // Generate a chunk using server data
+    private generateChunkFromServer(chunkX: number, chunkY: number, chunkZ: number, blockMap: Map<string, BlockType>): Chunk {
+        const chunk = new Chunk(
+            chunkX, 
+            chunkY, 
+            chunkZ, 
+            this.scene, 
+            this.textureManager,
+            (worldX, worldY, worldZ) => this.getBlock(worldX, worldY, worldZ)
+        );
+        
+        // Set the chunk's blocks from the server data
+        for (let x = 0; x < CHUNK_SIZE; x++) {
+            for (let y = 0; y < CHUNK_SIZE; y++) {
+                for (let z = 0; z < CHUNK_SIZE; z++) {
+                    const worldX = chunkX * CHUNK_SIZE + x;
+                    const worldY = chunkY * CHUNK_SIZE + y;
+                    const worldZ = chunkZ * CHUNK_SIZE + z;
+                    
+                    const key = `${worldX},${worldY},${worldZ}`;
+                    const blockType = blockMap.get(key);
+                    
+                    if (blockType !== undefined) {
+                        chunk.setBlock(x, y, z, blockType);
+                    } else {
+                        // If the block isn't in the server data, use air
+                        chunk.setBlock(x, y, z, BlockType.AIR);
+                    }
+                }
+            }
+        }
+        
+        // Add the chunk to the map
+        const chunkKey = this.getChunkKey(chunkX, chunkY, chunkZ);
+        this.chunks.set(chunkKey, chunk);
+        
+        // Count non-AIR blocks for debugging
+        const nonAirBlockCount = chunk.countNonAirBlocks();
+        if (nonAirBlockCount > 0) {
+            console.log(`Chunk at (${chunkX}, ${chunkY}, ${chunkZ}) has ${nonAirBlockCount} non-AIR blocks`);
+        }
+        
+        // Build the mesh immediately instead of marking as dirty
+        chunk.buildInitialMesh();
+        
+        return chunk;
+    }
+    
+    // Set a block type at world coordinates
+    public setBlockTypeAtCoordinates(x: number, y: number, z: number, type: BlockType, broadcastUpdate: boolean = true): void {
+        this.setBlock(x, y, z, type, broadcastUpdate);
+    }
+    
+    public isInitialized(): boolean {
+        return this._isInitialized;
     }
 } 

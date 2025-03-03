@@ -63,7 +63,7 @@ export class Engine {
         
         console.log('Initializing World...');
         // Initialize game components
-        this.world = new World(this.scene);
+        this.world = new World(this.scene, this.textureManager);
         
         console.log('Initializing Player...');
         this.player = new Player(this.camera, this.scene, this.world);
@@ -98,26 +98,41 @@ export class Engine {
     private hookPlayerBlockUpdates(): void {
         // Monkey-patch the player's block setting methods
         const originalSetBlock = this.world.setBlock.bind(this.world);
-        this.world.setBlock = (x: number, y: number, z: number, type: number) => {
-            // Call the original method
-            originalSetBlock(x, y, z, type);
+        this.world.setBlock = (x: number, y: number, z: number, type: number, broadcastUpdate: boolean = true) => {
+            // Call the original method with broadcastUpdate set to false to prevent double-sending
+            originalSetBlock(x, y, z, type, false);
             
-            // Send the update to the network
-            console.log(`Sending block update: x=${x}, y=${y}, z=${z}, type=${type}`);
-            // this.networkManager.sendBlockUpdate(x, y, z, type);
+            // Only send the update to the network if broadcastUpdate is true
+            if (broadcastUpdate) {
+                console.log(`Sending block update: x=${x}, y=${y}, z=${z}, type=${type}`);
+                this.networkManager.sendBlockUpdate(x, y, z, type);
+            }
         };
     }
     
-    public start(): void {
+    public async start(): Promise<void> {
         if (!this.isRunning) {
             console.log('Starting engine...');
             this.isRunning = true;
             this.clock.start();
             
-            console.log('Generating world...');
-            this.world.generate();
+            // Set the network manager in the world
+            this.world.setNetworkManager(this.networkManager);
             
-            console.log('Connecting to network...');
+            // First load the initial world state via HTTP
+            console.log('Loading initial world state via HTTP...');
+            const httpLoadSuccess = await this.networkManager.loadInitialWorldState();
+            
+            if (httpLoadSuccess) {
+                console.log('Successfully loaded world state via HTTP');
+            } else {
+                console.error('Failed to load world state via HTTP');
+                console.log('Initializing empty world as fallback');
+                this.world.initializeFromServer([]);
+            }
+            
+            // Connect to WebSocket for real-time updates
+            console.log('Connecting to WebSocket for real-time player updates...');
             this.networkManager.connect();
             
             console.log('Starting game loop...');

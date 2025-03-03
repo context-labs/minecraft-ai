@@ -146,7 +146,12 @@ export interface ChatMessage {
     timestamp: number;
 }
 
+let counter = 0;
+
 export class NetworkManager {
+    private static blockUpdateCounter = 0; // Add counter for block updates
+    private static DEBUG_LOGGING = false; // Flag to control verbose logging
+
     private socket: WebSocket | null = null;
     private connected: boolean = false;
     private world: World;
@@ -163,6 +168,13 @@ export class NetworkManager {
     private lastSentRotation: { x: number; y: number } = { x: 0, y: 0 };
     private lastSentBlockType: BlockType = 0;
     private lastUpdateTime: number = 0;
+
+    private pendingWorldBlocks: Array<{position: {x: number, y: number, z: number}, blockType: number}> = [];
+    private totalWorldChunks: number = 0;
+    private receivedWorldChunks: number = 0;
+
+    private isLoadingWorld: boolean = false;
+    private worldLoadStartTime: number = 0;
 
     constructor(world: World, player: Player, scene: THREE.Scene, textureManager: any) {
         this.world = world;
@@ -193,39 +205,72 @@ export class NetworkManager {
     }
 
     private onMessage(event: MessageEvent): void {
-        const message = JSON.parse(event.data);
-        switch (message.type) {
-            case MessageType.JOIN:
-                this.handlePlayerJoin(message.data);
-                break;
-            case MessageType.LEAVE:
-                this.handlePlayerLeave(message.data);
-                break;
-            case MessageType.PLAYER_UPDATE:
-                this.handlePlayerUpdate(message.data);
-                break;
-            case MessageType.BLOCK_UPDATE:
-                this.handleBlockUpdate(message.data);
-                break;
-            case MessageType.INITIAL_STATE:
-                this.handleInitialState(message.data);
-                break;
-            case MessageType.CHAT:
-                this.handleChatMessage(message.data);
-                break;
+        try {
+            const message = JSON.parse(event.data);
+            
+            switch (message.type) {
+                case MessageType.JOIN:
+                    this.handlePlayerJoin(message.data);
+                    break;
+                case MessageType.LEAVE:
+                    this.handlePlayerLeave(message.data);
+                    break;
+                case MessageType.PLAYER_UPDATE:
+                    this.handlePlayerUpdate(message.data);
+                    break;
+                case MessageType.BLOCK_UPDATE:
+                    
+                    this.handleBlockUpdate(message.data);
+                    break;
+                case MessageType.INITIAL_STATE:
+                    this.handleInitialState(message.data);
+                    break;
+                case MessageType.WORLD_STATE:
+                    console.log('Received block update:', ++counter);
+                    this.handleWorldState(message.data);
+                    break;
+                case MessageType.CHAT:
+                    this.handleChatMessage(message.data);
+                    break;
+            }
+        } catch (error) {
+            console.error('Error parsing message:', error);
         }
     }
 
     private onClose(): void {
+        console.log('WebSocket connection closed');
         this.connected = false;
-        if (this.updateInterval !== null) clearInterval(this.updateInterval);
+        
+        // Clear the update interval
+        if (this.updateInterval !== null) {
+            clearInterval(this.updateInterval);
+            this.updateInterval = null;
+        }
+        
+        // Clean up remote players
         this.remotePlayers.forEach((player) => player.dispose(this.scene));
         this.remotePlayers.clear();
-        setTimeout(() => this.connect(), 5000);
+        
+        // Attempt to reconnect after a delay
+        this.scheduleReconnect();
     }
 
     private onError(error: Event): void {
         console.error('WebSocket error:', error);
+        // The onClose handler will be called after this, which will handle reconnection
+    }
+
+    private scheduleReconnect(): void {
+        console.log('Scheduling reconnection attempt...');
+        
+        // Try to reconnect after 3 seconds
+        setTimeout(() => {
+            if (!this.connected) {
+                console.log('Attempting to reconnect...');
+                this.connect();
+            }
+        }, 3000);
     }
 
     private handlePlayerJoin(data: any): void {
@@ -284,61 +329,95 @@ export class NetworkManager {
     }
 
     private handleBlockUpdate(data: any): void {
-        // Update block in world
-        this.world.setBlock(
-            data.position.x,
-            data.position.y,
-            data.position.z,
-            data.blockType
-        );
+        if (!data || !data.position || typeof data.blockType !== 'number') {
+            console.warn('Received invalid block update data:', data);
+            return;
+        }
+        
+        const { position, blockType, playerId } = data;
+        
+        // Only log occasionally to reduce console spam
+        NetworkManager.blockUpdateCounter++;
+        if (NetworkManager.DEBUG_LOGGING || NetworkManager.blockUpdateCounter % 50 === 0) {
+            console.log(`Received block update: x=${position.x}, y=${position.y}, z=${position.z}, type=${blockType}, from=${playerId || 'unknown'} (update #${NetworkManager.blockUpdateCounter})`);
+        }
+        
+        // Set the block directly with broadcastUpdate=false to prevent echo effects
+        // This ensures we don't re-broadcast blocks we received from the server
+        this.world.setBlock(position.x, position.y, position.z, blockType, false);
     }
 
     private handleInitialState(data: any): void {
+        console.log('Received initial state from server via WebSocket');
+        
+        // If we've already initialized the world via HTTP, just update any missing information
+        const worldInitialized = this.world.isInitialized();
+        if (worldInitialized) {
+            console.log('World already initialized via HTTP, updating any missing information');
+            
+            // Update remote players
+            if (data.players && Array.isArray(data.players)) {
+                const playerId = this.getPlayerId();
+                data.players.forEach((playerData: any) => {
+                    if (playerData.id !== playerId && !this.remotePlayers.has(playerData.id)) {
+                        this.remotePlayers.set(
+                            playerData.id,
+                            new RemotePlayer(playerData, this.scene, this.textureManager)
+                        );
+                    }
+                });
+                console.log(`Added ${this.remotePlayers.size} remote players from WebSocket update`);
+            }
+            
+            return;
+        }
+        
         // Process all existing players
-        data.players.forEach((playerData: any) => {
-            if (playerData.id !== this.player.id) {
-                this.remotePlayers.set(
-                    playerData.id,
-                    new RemotePlayer(playerData, this.scene, this.textureManager)
-                );
-            }
-        });
-
-        // Process world state - apply current blocks without sending updates back
-        if (data.worldState) {
-            // Use current world state map instead of updates array
-            for (const [posKey, blockData] of Object.entries(data.worldState)) {
-                const [x, y, z] = posKey.split(',').map(Number);
-                // Set block locally without sending update to server
-                this.world.setBlockTypeAtCoordinates(x, y, z, blockData.blockType, false);
-            }
-        } else if (data.worldUpdates) {
-            // Legacy support for worldUpdates array if server hasn't been updated
-            data.worldUpdates.forEach((update: any) => {
-                const { position, blockType } = update;
-                // Set block locally without sending update to server
-                this.world.setBlockTypeAtCoordinates(
-                    position.x,
-                    position.y,
-                    position.z,
-                    blockType,
-                    false
-                );
+        if (data.players && Array.isArray(data.players)) {
+            const playerId = this.getPlayerId();
+            data.players.forEach((playerData: any) => {
+                if (playerData.id !== playerId) {
+                    this.remotePlayers.set(
+                        playerData.id,
+                        new RemotePlayer(playerData, this.scene, this.textureManager)
+                    );
+                }
             });
+            console.log(`Added ${this.remotePlayers.size} remote players`);
+        } else {
+            console.warn('No player data in initial state');
         }
 
         // Process chat messages if available
-        if (data.chatMessages) {
+        if (data.chatMessages && Array.isArray(data.chatMessages)) {
             data.chatMessages.forEach((message: ChatMessage) => {
                 this.handleChatMessage(message);
             });
+            console.log(`Loaded ${data.chatMessages.length} chat messages from history`);
         }
+        
+        // Note: We no longer expect world state chunks via WebSocket
+        // The world state is loaded via HTTP, so we don't need to process worldStateMetadata
+        console.log('Initial player data processing complete');
+        
+        // If we haven't loaded the world yet, try to load it via HTTP now
+        if (!worldInitialized) {
+            console.log('World not initialized yet, attempting to load via HTTP...');
+            this.loadInitialWorldState().catch(error => {
+                console.error('Failed to load world state via HTTP after WebSocket connection:', error);
+                // Initialize an empty world as a last resort
+                this.world.initializeFromServer([]);
+            });
+        }
+    }
 
-        console.log('Received initial state:', {
-            players: data.players.length,
-            worldBlocks: data.worldState ? Object.keys(data.worldState).length : 
-                        (data.worldUpdates ? data.worldUpdates.length : 0)
-        });
+    // Handle world state chunks
+    private handleWorldState(data: any): void {
+        // We no longer expect world state chunks via WebSocket
+        console.warn('Received unexpected world state chunk via WebSocket. World state should be loaded via HTTP.');
+        
+        // Log the data for debugging
+        console.log('Unexpected world state chunk:', data);
     }
 
     private handleChatMessage(data: ChatMessage): void {
@@ -491,5 +570,102 @@ export class NetworkManager {
 
     public getChatHistory(): ChatMessage[] {
         return [...this.chatMessages];
+    }
+
+    // Helper method to get a unique identifier for the local player
+    private getPlayerId(): string {
+        // Use a property from the player object that can serve as a unique ID
+        // For now, we'll use a simple hash of the player's initial position
+        const pos = this.player.getPosition();
+        return `local-player-${pos.x}-${pos.y}-${pos.z}`;
+    }
+
+    // Add a method to load the initial world state via HTTP
+    public async loadInitialWorldState(): Promise<boolean> {
+        console.log('Loading initial world state via HTTP...');
+        
+        const maxRetries = 3;
+        let retryCount = 0;
+        
+        while (retryCount < maxRetries) {
+            try {
+                // Get the server URL from the WebSocket URL (assuming they're on the same server)
+                const serverUrl = window.location.origin;
+                console.log(`Attempting to fetch world state from ${serverUrl}/api/world-state (attempt ${retryCount + 1}/${maxRetries})`);
+                
+                const response = await fetch(`${serverUrl}/api/world-state`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                console.log(`Received world state via HTTP with ${data.blocks.length} blocks`);
+                
+                // Convert the optimized block format back to the expected format
+                let blocks;
+                if (Array.isArray(data.blocks) && data.blocks.length > 0 && Array.isArray(data.blocks[0])) {
+                    // Handle optimized format [x, y, z, blockType]
+                    blocks = data.blocks.map((block: number[]) => ({
+                        position: { x: block[0], y: block[1], z: block[2] },
+                        blockType: block[3]
+                    }));
+                    console.log('Converted optimized block format to standard format');
+                } else {
+                    // Handle standard format { position: {x,y,z}, blockType }
+                    blocks = data.blocks;
+                }
+                
+                // Initialize the world with the received blocks
+                this.world.initializeFromServer(blocks);
+                
+                // If there are other players, process them
+                if (data.players && Array.isArray(data.players)) {
+                    const playerId = this.getPlayerId();
+                    data.players.forEach((playerData: any) => {
+                        if (playerData.id !== playerId) {
+                            this.remotePlayers.set(
+                                playerData.id,
+                                new RemotePlayer(playerData, this.scene, this.textureManager)
+                            );
+                        }
+                    });
+                    console.log(`Added ${this.remotePlayers.size} remote players`);
+                }
+                
+                // Process chat messages if available
+                if (data.chatMessages && Array.isArray(data.chatMessages)) {
+                    data.chatMessages.forEach((message: ChatMessage) => {
+                        this.handleChatMessage(message);
+                    });
+                    console.log(`Loaded ${data.chatMessages.length} chat messages from history`);
+                }
+                
+                console.log('Initial world state loaded successfully via HTTP');
+                return true;
+            } catch (error) {
+                console.error(`Failed to load initial world state via HTTP (attempt ${retryCount + 1}/${maxRetries}):`, error);
+                retryCount++;
+                
+                if (retryCount < maxRetries) {
+                    // Wait before retrying (exponential backoff)
+                    const delay = Math.pow(2, retryCount) * 1000;
+                    console.log(`Retrying in ${delay/1000} seconds...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+        
+        console.error(`Failed to load initial world state via HTTP after ${maxRetries} attempts, falling back to WebSocket`);
+        return false;
+    }
+
+    /**
+     * Toggle debug logging for network events
+     * @param enable Whether to enable or disable debug logging
+     */
+    public static setDebugLogging(enable: boolean): void {
+        NetworkManager.DEBUG_LOGGING = enable;
+        console.log(`Network debug logging ${enable ? 'enabled' : 'disabled'}`);
     }
 }

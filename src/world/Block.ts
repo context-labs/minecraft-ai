@@ -278,7 +278,7 @@ export class Block {
     public static isLiquid(type: BlockType): boolean {
         return Block.BLOCKS[type].liquid;
     }
-    
+
     public static isAir(type: BlockType): boolean {
         return type === BlockType.AIR;
     }

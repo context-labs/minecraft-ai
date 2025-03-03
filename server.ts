@@ -2,6 +2,8 @@ import { serve } from 'bun';
 import { join } from 'path';
 import { readFileSync } from 'fs';
 import type { ServerWebSocket } from "bun";
+import { WorldGenerator } from './src/world/WorldGenerator';
+import { BlockType } from './src/world/Block';
 
 // Game state types
 interface Player {
@@ -10,6 +12,7 @@ interface Player {
     rotation: { x: number, y: number };
     selectedBlockType: number;
     username: string;
+    connectionTime?: number; // Add connection timestamp
 }
 
 interface GameState {
@@ -34,6 +37,9 @@ const gameState: GameState = {
         timestamp: number;
     }>()
 };
+
+// Map to track rate limiting for world state requests
+const worldStateRequestTimes = new Map<string, number>();
 
 // Helper functions for position conversions
 function positionToKey(position: { x: number, y: number, z: number }): string {
@@ -88,19 +94,107 @@ interface Message {
 // WebSocket connections
 const connections = new Map<string, ServerWebSocket<{ id: string }>>();
 
+// Generate initial world state
+console.log('Generating initial world state...');
+const worldGenerator = new WorldGenerator();
+const initialWorldBlocks = worldGenerator.generateInitialWorld();
+
+// Convert the generated world to the format used by the game state
+for (const [posKey, blockType] of initialWorldBlocks.entries()) {
+    gameState.currentWorldState.set(posKey, {
+        blockType,
+        timestamp: Date.now()
+    });
+}
+
+console.log(`Generated ${gameState.currentWorldState.size} initial blocks`);
+
 // Create server
-const server = serve({
+const server: ReturnType<typeof serve> = serve({
     port: 3000,
-    fetch(req) {
+    fetch(req): Response | undefined {
         const url = new URL(req.url);
         let path = url.pathname;
         
         // Handle WebSocket upgrade
         if (path === '/ws') {
-            const success = server.upgrade(req, {
+            const success: boolean = server.upgrade(req, {
                 data: { id: crypto.randomUUID() }
             });
             return success ? undefined : new Response("WebSocket upgrade failed", { status: 400 });
+        }
+        
+        // Handle API requests for world state
+        if (path === '/api/world-state') {
+            try {
+                // Simple rate limiting - check if this IP has requested recently
+                const clientIP = req.headers.get('x-forwarded-for') || 'unknown';
+                const now = Date.now();
+                const lastRequestTime = worldStateRequestTimes.get(clientIP) || 0;
+                
+                // Allow requests once every 5 seconds per IP
+                if (now - lastRequestTime < 5000) {
+                    return new Response(JSON.stringify({ 
+                        error: 'Rate limit exceeded. Please wait before requesting again.' 
+                    }), {
+                        status: 429,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*',
+                            'Retry-After': '5'
+                        }
+                    });
+                }
+                
+                // Update last request time
+                worldStateRequestTimes.set(clientIP, now);
+                
+                // Convert currentWorldState map to an array of objects for JSON serialization
+                const blocks = Array.from(gameState.currentWorldState.entries()).map(([posKey, blockData]) => {
+                    return {
+                        position: keyToPosition(posKey),
+                        blockType: blockData.blockType,
+                        timestamp: blockData.timestamp
+                    };
+                });
+                
+                // Get all players
+                const players = Array.from(gameState.players.values());
+                
+                // Create response object with optimized format for blocks
+                const responseData = {
+                    // Use a more compact format for blocks to reduce data size
+                    blocks: blocks.map(block => [
+                        block.position.x,
+                        block.position.y, 
+                        block.position.z, 
+                        block.blockType
+                    ]),
+                    players,
+                    chatMessages: [], // Add chat history if you have it
+                    timestamp: now
+                };
+                
+                console.log(`Sending world state via HTTP with ${blocks.length} blocks and ${players.length} players to ${clientIP}`);
+                
+                // Return uncompressed JSON response
+                return new Response(JSON.stringify(responseData), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                        'Cache-Control': 'no-store'
+                    }
+                });
+            } catch (error) {
+                console.error('Error serving world state via HTTP:', error);
+                return new Response(JSON.stringify({ error: 'Internal server error' }), {
+                    status: 500,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    }
+                });
+            }
         }
         
         // Default to index.html for root path
@@ -155,13 +249,14 @@ const server = serve({
             // Store connection
             connections.set(playerId, ws);
             
-            // Initialize player in game state with fixed spawn point
+            // Initialize player in game state with fixed spawn point and connection time
             gameState.players.set(playerId, {
                 id: playerId,
                 position: { ...SPAWN_POINT },  // Use the fixed spawn point
                 rotation: { x: 0, y: 0 },
                 selectedBlockType: 0,
-                username: `Player-${playerId.substring(0, 4)}`
+                username: `Player-${playerId.substring(0, 4)}`,
+                connectionTime: Date.now() // Track when the player connected
             });
             
             // Send initial state to new player
@@ -208,25 +303,25 @@ const server = serve({
 });
 
 // Send initial state to new player
-function sendInitialState(ws: ServerWebSocket<{ id: string }>, playerId: string) {
+async function sendInitialState(ws: ServerWebSocket<{ id: string }>, playerId: string) {
+    // Only send player data, not world state (which is now loaded via HTTP)
     const initialPlayers = Array.from(gameState.players.entries())
         .filter(([id]) => id !== playerId)
         .map(([_, player]) => player);
     
-    // Convert currentWorldState map to an array of objects for JSON serialization
-    const currentWorld = Array.from(gameState.currentWorldState.entries()).map(([posKey, blockData]) => {
-        return {
-            position: keyToPosition(posKey),
-            blockType: blockData.blockType,
-            timestamp: blockData.timestamp
-        };
-    });
+    console.log(`Sending player data to new player ${playerId} (${initialPlayers.length} other players)`);
     
+    // Send only player data
     ws.send(JSON.stringify({
         type: MessageType.INITIAL_STATE,
         data: {
             players: initialPlayers,
-            worldState: currentWorld,
+            // No world state metadata or chunks - client will load via HTTP
+            worldStateMetadata: {
+                totalBlocks: 0,
+                totalChunks: 0,
+                chunkSize: 0
+            },
             timestamp: Date.now()
         }
     }));
@@ -262,7 +357,7 @@ function broadcastPlayerLeave(playerId: string) {
         if (id !== playerId) {
             ws.send(JSON.stringify({
                 type: MessageType.LEAVE,
-                data: { 
+                data: {
                     id: playerId,
                     timestamp
                 }
@@ -271,34 +366,28 @@ function broadcastPlayerLeave(playerId: string) {
     }
 }
 
-// Handle player position/rotation update
+// Handle player update
 function handlePlayerUpdate(playerId: string, data: any) {
     const player = gameState.players.get(playerId);
     if (!player) return;
 
     // Update player state
-    player.position = data.position || player.position;
-    player.rotation = data.rotation || player.rotation;
-    player.selectedBlockType = data.selectedBlockType ?? player.selectedBlockType;
-
-    const timestamp = Date.now();
-    console.log(`[${new Date(timestamp).toISOString()}] Broadcasting player update from player ${playerId}:`, {
-        position: player.position,
-        rotation: player.rotation,
-        selectedBlockType: player.selectedBlockType
-    });
+    player.position = data.position;
+    player.rotation = data.rotation;
+    player.selectedBlockType = data.selectedBlockType;
 
     // Broadcast update to all other players
+    const timestamp = Date.now();
+    
     for (const [id, ws] of connections.entries()) {
         if (id !== playerId) {
             ws.send(JSON.stringify({
                 type: MessageType.PLAYER_UPDATE,
                 data: {
-                    id: player.id,
+                    id: playerId,
                     position: player.position,
                     rotation: player.rotation,
                     selectedBlockType: player.selectedBlockType,
-                    username: player.username,
                     timestamp
                 }
             }));
@@ -306,51 +395,85 @@ function handlePlayerUpdate(playerId: string, data: any) {
     }
 }
 
-// Handle block placement/breaking
+// Handle block update
 function handleBlockUpdate(playerId: string, data: any) {
-    const timestamp = Date.now();
-    console.log(`[${new Date(timestamp).toISOString()}] Broadcasting block update from player ${playerId}:`, {
-        position: data.position,
-        blockType: data.blockType
-    });
+    const player = gameState.players.get(playerId);
+    if (!player) return;
 
-    // Add block update to world state
-    gameState.worldUpdates.push({
-        position: data.position,
-        blockType: data.blockType,
+    const { position, blockType } = data;
+    
+    // Validate that the block is within a reasonable distance from the player
+    const dx = player.position.x - position.x;
+    const dy = player.position.y - position.y;
+    const dz = player.position.z - position.z;
+    const distanceSquared = dx * dx + dy * dy + dz * dz;
+    
+    // Define maximum distance a player can modify blocks (slightly larger than client-side reach)
+    const MAX_BLOCK_MODIFICATION_DISTANCE = 10;
+    
+    if (distanceSquared > MAX_BLOCK_MODIFICATION_DISTANCE * MAX_BLOCK_MODIFICATION_DISTANCE) {
+        console.warn(`Player ${playerId} tried to modify a block too far away: distance=${Math.sqrt(distanceSquared).toFixed(2)}`);
+        return;
+    }
+    
+    const posKey = positionToKey(position);
+    const timestamp = Date.now();
+
+    // Check if this block was recently updated to prevent rapid changes
+    const existingBlock = gameState.currentWorldState.get(posKey);
+    if (existingBlock && (timestamp - existingBlock.timestamp < 100)) {
+        // Skip if the block was updated less than 100ms ago
+        return;
+    }
+
+    // Update world state
+    gameState.currentWorldState.set(posKey, {
+        blockType,
         timestamp
     });
 
-    // Keep only the last 1000 updates
+    // Add to updates list
+    gameState.worldUpdates.push({
+        position,
+        blockType,
+        timestamp
+    });
+
+    // Limit the size of the updates list
     if (gameState.worldUpdates.length > 1000) {
         gameState.worldUpdates.shift();
     }
 
-    // Update the current world state
-    const posKey = positionToKey(data.position);
-    
-    // If blockType is 0, it means the block was removed, so we should delete it from the map
-    if (data.blockType === 0) {
-        gameState.currentWorldState.delete(posKey);
-    } else {
-        // Otherwise, update or add the block to the current state
-        gameState.currentWorldState.set(posKey, {
-            blockType: data.blockType,
-            timestamp
-        });
-    }
+    // Broadcast update to all players except the one who made the change
+    for (const [id, ws] of connections.entries()) {
+        // Don't send the update back to the player who made it
+        if (id === playerId) continue;
+        
+        // Only send updates to players within range
+        const otherPlayer = gameState.players.get(id);
+        if (!otherPlayer) continue;
 
-    // Broadcast block update to all players
-    for (const ws of connections.values()) {
-        ws.send(JSON.stringify({
-            type: MessageType.BLOCK_UPDATE,
-            data: {
-                position: data.position,
-                blockType: data.blockType,
-                playerId: playerId,
-                timestamp
-            }
-        }));
+        // Skip sending block updates that occurred before the player connected
+        if (otherPlayer.connectionTime && timestamp <= otherPlayer.connectionTime) {
+            continue;
+        }
+
+        const dx = otherPlayer.position.x - position.x;
+        const dy = otherPlayer.position.y - position.y;
+        const dz = otherPlayer.position.z - position.z;
+        const distanceSquared = dx * dx + dy * dy + dz * dz;
+
+        if (distanceSquared <= MAX_BLOCK_UPDATE_DISTANCE * MAX_BLOCK_UPDATE_DISTANCE) {
+            ws.send(JSON.stringify({
+                type: MessageType.BLOCK_UPDATE,
+                data: {
+                    position,
+                    blockType,
+                    timestamp,
+                    playerId
+                }
+            }));
+        }
     }
 }
 
@@ -360,21 +483,24 @@ function broadcastChatMessage(playerId: string, data: any) {
     if (!player) return;
 
     const timestamp = Date.now();
-    console.log(`[${new Date(timestamp).toISOString()}] Broadcasting chat message from player ${player.username} (${playerId}): ${data.message}`);
+    const chatMessage = {
+        message: data.message,
+        player: {
+            id: playerId,
+            username: player.username
+        },
+        timestamp
+    };
 
-    for (const ws of connections.values()) {
+    console.log(`[${new Date(timestamp).toISOString()}] Chat from ${player.username}: ${data.message}`);
+
+    // Broadcast to all players
+    for (const [_, ws] of connections.entries()) {
         ws.send(JSON.stringify({
             type: MessageType.CHAT,
-            data: {
-                message: data.message,
-                player: {
-                    id: player.id,
-                    username: player.username
-                },
-                timestamp
-            }
+            data: chatMessage
         }));
     }
 }
 
-console.log(`Server running at http://localhost:${server.port}`); 
+console.log(`Server running at http://localhost:3000`); 
