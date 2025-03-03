@@ -6,7 +6,6 @@
     "start": "bun run build.ts && bun run server.ts",
     "build": "bun run build.ts",
     "dev": "bun run --watch server.ts",
-    "generate-textures": "bun run src/utils/TextureAtlasGenerator.ts",
     "start:ngrok": "ngrok http --url=cc.ngrok.pro 3000"
   },
   "devDependencies": {

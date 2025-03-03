@@ -1,5 +1,4 @@
 import { build } from 'bun';
-import { generateTextureAtlas } from './src/utils/TextureAtlasGenerator';
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
@@ -8,9 +7,7 @@ async function buildProject() {
     console.log('Building project...');
     
     try {
-        // Generate texture atlas
-        await generateTextureAtlas();
-        
+    
         // Ensure dist directory exists
         const distDir = path.join(process.cwd(), 'dist');
         if (!fs.existsSync(distDir)) {
