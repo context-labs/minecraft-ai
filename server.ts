@@ -113,139 +113,149 @@ console.log(`Generated ${gameState.currentWorldState.size} initial blocks`);
 const server: ReturnType<typeof serve> = serve({
     port: 3000,
     fetch(req): Response | undefined {
-        const url = new URL(req.url);
-        let path = url.pathname;
-        
-        // Handle WebSocket upgrade
-        if (path === '/ws') {
-            const success: boolean = server.upgrade(req, {
-                data: { id: crypto.randomUUID() }
-            });
-            return success ? undefined : new Response("WebSocket upgrade failed", { status: 400 });
-        }
-        
-        // Handle API requests for world state
-        if (path === '/api/world-state') {
-            try {
-                // Simple rate limiting - check if this IP has requested recently
-                const clientIP = req.headers.get('x-forwarded-for') || 'unknown';
-                const now = Date.now();
-                
-                // Convert currentWorldState map to an array of objects for JSON serialization
-                const blocks = Array.from(gameState.currentWorldState.entries()).map(([posKey, blockData]) => {
-                    return {
-                        position: keyToPosition(posKey),
-                        blockType: blockData.blockType,
-                        timestamp: blockData.timestamp
+        try {
+            const url = new URL(req.url);
+            let path = url.pathname;
+
+            // // Handle WebSocket upgrade
+            // if (path === '/ws') {
+            //     const success: boolean = server.upgrade(req, {
+            //         data: { id: crypto.randomUUID() }
+            //     });
+            //     return success ? undefined : new Response("WebSocket upgrade failed", { status: 400 });
+            // }
+
+            // Handle API requests for world state
+            if (path === '/api/world-state') {
+                try {
+                    // Simple rate limiting - check if this IP has requested recently
+                    const clientIP = req.headers.get('x-forwarded-for') || 'unknown';
+                    const now = Date.now();
+
+                    // Convert currentWorldState map to an array of objects for JSON serialization
+                    const blocks = Array.from(gameState.currentWorldState.entries()).map(([posKey, blockData]) => {
+                        return {
+                            position: keyToPosition(posKey),
+                            blockType: blockData.blockType,
+                            timestamp: blockData.timestamp
+                        };
+                    });
+
+                    // Get all players
+                    const players = Array.from(gameState.players.values());
+
+                    // Create response object with optimized format for blocks
+                    const responseData = {
+                        // Use a more compact format for blocks to reduce data size
+                        blocks: blocks.map(block => [
+                            block.position.x,
+                            block.position.y,
+                            block.position.z,
+                            block.blockType
+                        ]),
+                        players,
+                        chatMessages: [], // Add chat history if you have it
+                        timestamp: now
                     };
-                });
-                
-                // Get all players
-                const players = Array.from(gameState.players.values());
-                
-                // Create response object with optimized format for blocks
-                const responseData = {
-                    // Use a more compact format for blocks to reduce data size
-                    blocks: blocks.map(block => [
-                        block.position.x,
-                        block.position.y, 
-                        block.position.z, 
-                        block.blockType
-                    ]),
-                    players,
-                    chatMessages: [], // Add chat history if you have it
-                    timestamp: now
-                };
-                
-                console.log(`Sending world state via HTTP with ${blocks.length} blocks and ${players.length} players to ${clientIP}`);
-                
-                // Return uncompressed JSON response
-                return new Response(JSON.stringify(responseData), {
+
+                    console.log(`Sending world state via HTTP with ${blocks.length} blocks and ${players.length} players to ${clientIP}`);
+
+                    // Return uncompressed JSON response
+                    return new Response(JSON.stringify(responseData), {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*',
+                            'Cache-Control': 'no-store'
+                        }
+                    });
+                } catch (error) {
+                    console.error('Error serving world state via HTTP:', error);
+                    return new Response(JSON.stringify({ error: 'Internal server error' }), {
+                        status: 500,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Access-Control-Allow-Origin': '*'
+                        }
+                    });
+                }
+            }
+
+            // Default to index.html for root path
+            if (path === '/') {
+                path = '/index.html';
+            }
+
+            try {
+                // Determine file path
+                let filePath: string;
+
+                if (path.startsWith('/dist/')) {
+                    // Serve from dist directory
+                    filePath = join(process.cwd(), path);
+                } else if (path === '/index.html') {
+                    // Serve index.html from root
+                    filePath = join(process.cwd(), 'index.html');
+                } else if (path.startsWith('/textures/')) {
+                    // Serve textures from public directory
+                    filePath = join(process.cwd(), 'public', path);
+                } else {
+                    // Serve other static files from public directory
+                    filePath = join(process.cwd(), 'public', path);
+                }
+
+                // Read file
+                const file = readFileSync(filePath);
+
+                // Determine content type
+                const ext = path.substring(path.lastIndexOf('.'));
+                const contentType = contentTypes[ext] || 'application/octet-stream';
+
+                // Return response
+                return new Response(file, {
                     headers: {
-                        'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*',
-                        'Cache-Control': 'no-store'
+                        'Content-Type': contentType
                     }
                 });
             } catch (error) {
-                console.error('Error serving world state via HTTP:', error);
-                return new Response(JSON.stringify({ error: 'Internal server error' }), {
-                    status: 500,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Access-Control-Allow-Origin': '*'
-                    }
+                // Return 404 for file not found
+                return new Response('Not Found', {
+                    status: 404
                 });
             }
-        }
-        
-        // Default to index.html for root path
-        if (path === '/') {
-            path = '/index.html';
-        }
-        
-        try {
-            // Determine file path
-            let filePath: string;
-            
-            if (path.startsWith('/dist/')) {
-                // Serve from dist directory
-                filePath = join(process.cwd(), path);
-            } else if (path === '/index.html') {
-                // Serve index.html from root
-                filePath = join(process.cwd(), 'index.html');
-            } else if (path.startsWith('/textures/')) {
-                // Serve textures from public directory
-                filePath = join(process.cwd(), 'public', path);
-            } else {
-                // Serve other static files from public directory
-                filePath = join(process.cwd(), 'public', path);
-            }
-            
-            // Read file
-            const file = readFileSync(filePath);
-            
-            // Determine content type
-            const ext = path.substring(path.lastIndexOf('.'));
-            const contentType = contentTypes[ext] || 'application/octet-stream';
-            
-            // Return response
-            return new Response(file, {
-                headers: {
-                    'Content-Type': contentType
-                }
-            });
         } catch (error) {
-            // Return 404 for file not found
-            return new Response('Not Found', {
-                status: 404
-            });
+            console.error('Error serving file:', error);
+            return new Response('Internal Server Error', { status: 500 });
         }
     },
     // WebSocket event handlers
     websocket: {
         open(ws: ServerWebSocket<{ id: string }>) {
-            const playerId = ws.data.id;
-            console.log(`Player ${playerId} connected`);
-            
-            // Store connection
-            connections.set(playerId, ws);
-            
-            // Initialize player in game state with fixed spawn point and connection time
-            gameState.players.set(playerId, {
-                id: playerId,
-                position: { ...SPAWN_POINT },  // Use the fixed spawn point
-                rotation: { x: 0, y: 0 },
-                selectedBlockType: 0,
-                username: `Player-${playerId.substring(0, 4)}`,
-                connectionTime: Date.now() // Track when the player connected
-            });
-            
-            // Send initial state to new player
-            sendInitialState(ws, playerId);
-            
-            // Broadcast join event to all other players
-            broadcastPlayerJoin(playerId);
+            try {
+                const playerId = ws.data.id;
+                console.log(`Player ${playerId} connected`);
+
+                // Store connection
+                connections.set(playerId, ws);
+
+                // Initialize player in game state with fixed spawn point and connection time
+                gameState.players.set(playerId, {
+                    id: playerId,
+                    position: { ...SPAWN_POINT },  // Use the fixed spawn point
+                    rotation: { x: 0, y: 0 },
+                    selectedBlockType: 0,
+                    username: `Player-${playerId.substring(0, 4)}`,
+                    connectionTime: Date.now() // Track when the player connected
+                });
+
+                // Send initial state to new player
+                sendInitialState(ws, playerId);
+
+                // Broadcast join event to all other players
+                broadcastPlayerJoin(playerId);
+            } catch (error) {
+                console.error('Error handling WebSocket connection:', error);
+                ws.close();
+            }
         },
         message(ws, message) {
             try {
@@ -269,17 +279,21 @@ const server: ReturnType<typeof serve> = serve({
             }
         },
         close(ws) {
-            const playerId = ws.data.id;
-            console.log(`Player ${playerId} disconnected`);
-            
+            try {
+                const playerId = ws.data.id;
+                console.log(`Player ${playerId} disconnected`);
+                
             // Remove player from game state
             gameState.players.delete(playerId);
             
             // Remove connection
             connections.delete(playerId);
-            
-            // Broadcast leave event
-            broadcastPlayerLeave(playerId);
+                
+                // Broadcast leave event
+                broadcastPlayerLeave(playerId);
+            } catch (error) {
+                console.error('Error handling WebSocket close:', error);
+            }
         }
     }
 });
