@@ -119,6 +119,14 @@ const server: ReturnType<typeof serve> = serve({
         const clientIP = req.headers.get('x-forwarded-for') || 'unknown';
         
         console.log(`[${new Date().toISOString()}] Request: ${req.method} ${path} from ${clientIP}`);
+
+        // Handle WebSocket upgrade
+        if (path === '/ws') {
+            const success: boolean = server.upgrade(req, {
+                data: { id: crypto.randomUUID() }
+            });
+            return success ? undefined : new Response("WebSocket upgrade failed", { status: 400 });
+        }
         
         // Add CORS headers to allow requests from all domains
         const corsHeaders = {
@@ -177,7 +185,8 @@ const server: ReturnType<typeof serve> = serve({
                         headers: {
                             'Content-Type': 'application/json',
                             'Access-Control-Allow-Origin': '*',
-                            'Cache-Control': 'no-store',    
+                            'Cache-Control': 'no-store',
+                            'Content-Encoding': 'gzip'
                         }
                     });
                     
