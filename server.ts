@@ -155,8 +155,6 @@ const server: ReturnType<typeof serve> = serve({
                     // Get all players
                     const players = Array.from(gameState.players.values());
 
-                    blocks.length = 100;
-
                     // Create response object with optimized format for blocks
                     const responseData = {
                         // Use a more compact format for blocks to reduce data size
@@ -173,12 +171,13 @@ const server: ReturnType<typeof serve> = serve({
 
                     console.log(`[${new Date().toISOString()}] Sending world state via HTTP with ${blocks.length} blocks and ${players.length} players to ${clientIP}`);
 
+                    const compressed = Bun.gzipSync(JSON.stringify(responseData));
                     // Return uncompressed JSON response
-                    const response = new Response(JSON.stringify(responseData), {
+                    const response = new Response(compressed, {
                         headers: {
                             'Content-Type': 'application/json',
                             'Access-Control-Allow-Origin': '*',
-                            'Cache-Control': 'no-store'
+                            'Cache-Control': 'no-store',    
                         }
                     });
                     
