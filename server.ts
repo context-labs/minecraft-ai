@@ -155,6 +155,8 @@ const server: ReturnType<typeof serve> = serve({
                     // Get all players
                     const players = Array.from(gameState.players.values());
 
+                    blocks.length = 100;
+
                     // Create response object with optimized format for blocks
                     const responseData = {
                         // Use a more compact format for blocks to reduce data size
