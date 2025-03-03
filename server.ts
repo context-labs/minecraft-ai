@@ -113,23 +113,34 @@ console.log(`Generated ${gameState.currentWorldState.size} initial blocks`);
 const server: ReturnType<typeof serve> = serve({
     port: 3000,
     fetch(req): Response | undefined {
+        const startTime = Date.now();
+        const url = new URL(req.url);
+        let path = url.pathname;
+        const clientIP = req.headers.get('x-forwarded-for') || 'unknown';
+        
+        console.log(`[${new Date().toISOString()}] Request: ${req.method} ${path} from ${clientIP}`);
+        
+        // Add CORS headers to allow requests from all domains
+        const corsHeaders = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Max-Age": "86400"
+        };
+
+        // Handle preflight OPTIONS requests
+        if (req.method === "OPTIONS") {
+            return new Response(null, {
+                status: 204,
+                headers: corsHeaders
+            });
+        }
+
         try {
-            const url = new URL(req.url);
-            let path = url.pathname;
-
-            // // Handle WebSocket upgrade
-            // if (path === '/ws') {
-            //     const success: boolean = server.upgrade(req, {
-            //         data: { id: crypto.randomUUID() }
-            //     });
-            //     return success ? undefined : new Response("WebSocket upgrade failed", { status: 400 });
-            // }
-
             // Handle API requests for world state
             if (path === '/api/world-state') {
                 try {
                     // Simple rate limiting - check if this IP has requested recently
-                    const clientIP = req.headers.get('x-forwarded-for') || 'unknown';
                     const now = Date.now();
 
                     // Convert currentWorldState map to an array of objects for JSON serialization
@@ -158,31 +169,41 @@ const server: ReturnType<typeof serve> = serve({
                         timestamp: now
                     };
 
-                    console.log(`Sending world state via HTTP with ${blocks.length} blocks and ${players.length} players to ${clientIP}`);
+                    console.log(`[${new Date().toISOString()}] Sending world state via HTTP with ${blocks.length} blocks and ${players.length} players to ${clientIP}`);
 
                     // Return uncompressed JSON response
-                    return new Response(JSON.stringify(responseData), {
+                    const response = new Response(JSON.stringify(responseData), {
                         headers: {
                             'Content-Type': 'application/json',
                             'Access-Control-Allow-Origin': '*',
                             'Cache-Control': 'no-store'
                         }
                     });
+                    
+                    const duration = Date.now() - startTime;
+                    console.log(`[${new Date().toISOString()}] Response: 200 OK for ${path} (${duration}ms)`);
+                    return response;
                 } catch (error) {
-                    console.error('Error serving world state via HTTP:', error);
-                    return new Response(JSON.stringify({ error: 'Internal server error' }), {
+                    console.error(`[${new Date().toISOString()}] Error serving world state via HTTP:`, error);
+                    
+                    const response = new Response(JSON.stringify({ error: 'Internal server error' }), {
                         status: 500,
                         headers: {
                             'Content-Type': 'application/json',
                             'Access-Control-Allow-Origin': '*'
                         }
                     });
+                    
+                    const duration = Date.now() - startTime;
+                    console.log(`[${new Date().toISOString()}] Response: 500 Error for ${path} (${duration}ms)`);
+                    return response;
                 }
             }
 
             // Default to index.html for root path
             if (path === '/') {
                 path = '/index.html';
+                console.log(`[${new Date().toISOString()}] Redirecting / to /index.html`);
             }
 
             try {
@@ -203,6 +224,8 @@ const server: ReturnType<typeof serve> = serve({
                     filePath = join(process.cwd(), 'public', path);
                 }
 
+                console.log(`[${new Date().toISOString()}] Serving file: ${filePath}`);
+
                 // Read file
                 const file = readFileSync(filePath);
 
@@ -211,20 +234,33 @@ const server: ReturnType<typeof serve> = serve({
                 const contentType = contentTypes[ext] || 'application/octet-stream';
 
                 // Return response
-                return new Response(file, {
+                const response = new Response(file, {
                     headers: {
                         'Content-Type': contentType
                     }
                 });
+                
+                const duration = Date.now() - startTime;
+                console.log(`[${new Date().toISOString()}] Response: 200 OK for ${path} (${duration}ms, ${file.byteLength} bytes, ${contentType})`);
+                return response;
             } catch (error) {
                 // Return 404 for file not found
-                return new Response('Not Found', {
+                const response = new Response('Not Found', {
                     status: 404
                 });
+                
+                const duration = Date.now() - startTime;
+                console.log(`[${new Date().toISOString()}] Response: 404 Not Found for ${path} (${duration}ms)`);
+                return response;
             }
         } catch (error) {
-            console.error('Error serving file:', error);
-            return new Response('Internal Server Error', { status: 500 });
+            console.error(`[${new Date().toISOString()}] Error serving file:`, error);
+            
+            const response = new Response('Internal Server Error', { status: 500 });
+            
+            const duration = Date.now() - startTime;
+            console.log(`[${new Date().toISOString()}] Response: 500 Error for ${path} (${duration}ms)`);
+            return response;
         }
     },
     // WebSocket event handlers
@@ -232,7 +268,7 @@ const server: ReturnType<typeof serve> = serve({
         open(ws: ServerWebSocket<{ id: string }>) {
             try {
                 const playerId = ws.data.id;
-                console.log(`Player ${playerId} connected`);
+                console.log(`[${new Date().toISOString()}] WebSocket: Player ${playerId} connected`);
 
                 // Store connection
                 connections.set(playerId, ws);
@@ -247,13 +283,17 @@ const server: ReturnType<typeof serve> = serve({
                     connectionTime: Date.now() // Track when the player connected
                 });
 
+                console.log(`[${new Date().toISOString()}] Player ${playerId} initialized at spawn point ${JSON.stringify(SPAWN_POINT)}`);
+
                 // Send initial state to new player
                 sendInitialState(ws, playerId);
 
                 // Broadcast join event to all other players
                 broadcastPlayerJoin(playerId);
+                
+                console.log(`[${new Date().toISOString()}] Total connected players: ${connections.size}`);
             } catch (error) {
-                console.error('Error handling WebSocket connection:', error);
+                console.error(`[${new Date().toISOString()}] Error handling WebSocket connection:`, error);
                 ws.close();
             }
         },
@@ -262,41 +302,51 @@ const server: ReturnType<typeof serve> = serve({
                 const parsedMessage = JSON.parse(message as string) as Message;
                 const playerId = ws.data.id;
                 
+                if (parsedMessage.type !== MessageType.PLAYER_UPDATE) {
+                    // Don't log player updates as they're too frequent
+                    console.log(`[${new Date().toISOString()}] WebSocket message from ${playerId}: ${parsedMessage.type}`);
+                }
+                
                 switch (parsedMessage.type) {
                     case MessageType.PLAYER_UPDATE:
-                        
                         handlePlayerUpdate(playerId, parsedMessage.data);
                         break;
                     case MessageType.BLOCK_UPDATE:
+                        console.log(`[${new Date().toISOString()}] Block update from ${playerId}: ${JSON.stringify(parsedMessage.data)}`);
                         handleBlockUpdate(playerId, parsedMessage.data);
                         break;
                     case MessageType.CHAT:
+                        console.log(`[${new Date().toISOString()}] Chat message from ${playerId}: ${parsedMessage.data.message}`);
                         broadcastChatMessage(playerId, parsedMessage.data);
                         break;
                 }
             } catch (error) {
-                console.error('Error processing message:', error);
+                console.error(`[${new Date().toISOString()}] Error processing message:`, error);
             }
         },
         close(ws) {
             try {
                 const playerId = ws.data.id;
-                console.log(`Player ${playerId} disconnected`);
+                console.log(`[${new Date().toISOString()}] WebSocket: Player ${playerId} disconnected`);
                 
-            // Remove player from game state
-            gameState.players.delete(playerId);
-            
-            // Remove connection
-            connections.delete(playerId);
+                // Remove player from game state
+                gameState.players.delete(playerId);
+                
+                // Remove connection
+                connections.delete(playerId);
                 
                 // Broadcast leave event
                 broadcastPlayerLeave(playerId);
+                
+                console.log(`[${new Date().toISOString()}] Total connected players: ${connections.size}`);
             } catch (error) {
-                console.error('Error handling WebSocket close:', error);
+                console.error(`[${new Date().toISOString()}] Error handling WebSocket close:`, error);
             }
         }
     }
 });
+
+console.log(`[${new Date().toISOString()}] Server started on port 3000`);
 
 // Send initial state to new player
 async function sendInitialState(ws: ServerWebSocket<{ id: string }>, playerId: string) {
