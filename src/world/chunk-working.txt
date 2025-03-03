@@ -30,10 +30,10 @@ export class Chunk {
     private getNeighborBlockCallback: GetNeighborBlockCallback;
 
     constructor(
-        x: number,
-        y: number,
-        z: number,
-        scene: THREE.Scene,
+        x: number, 
+        y: number, 
+        z: number, 
+        scene: THREE.Scene, 
         textureManager: TextureManager,
         getNeighborBlockCallback: GetNeighborBlockCallback
     ) {
@@ -47,7 +47,7 @@ export class Chunk {
         this.scene = scene;
         this.textureManager = textureManager;
         this.getNeighborBlockCallback = getNeighborBlockCallback;
-
+        
         // Initialize all blocks to air
         this.blocks.fill(BlockType.AIR);
     }
@@ -56,7 +56,7 @@ export class Chunk {
         if (this.isOutOfBounds(x, y, z)) {
             return BlockType.AIR;
         }
-
+        
         const index = this.getBlockIndex(x, y, z);
         return this.blocks[index];
     }
@@ -65,7 +65,7 @@ export class Chunk {
         if (this.isOutOfBounds(x, y, z)) {
             return;
         }
-
+        
         const index = this.getBlockIndex(x, y, z);
         if (this.blocks[index] !== type) {
             this.blocks[index] = type;
@@ -101,12 +101,12 @@ export class Chunk {
             try {
                 // Remove from scene
                 this.scene.remove(this.mesh);
-
+                
                 // Dispose of geometry
                 if (this.mesh.geometry) {
                     this.mesh.geometry.dispose();
                 }
-
+                
                 // Dispose of materials
                 if (Array.isArray(this.mesh.material)) {
                     this.mesh.material.forEach(material => {
@@ -123,50 +123,47 @@ export class Chunk {
                     if (matWithMap.map) matWithMap.map.dispose();
                     this.mesh.material.dispose();
                 }
-
+                
                 // Clear mesh reference
                 this.mesh = null;
             } catch (error) {
                 console.error(`Error disposing chunk at (${this.position.x}, ${this.position.y}, ${this.position.z}):`, error);
             }
         }
-
-        // Clear block data
-        this.blocks = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE);
-
+        
         // Mark as dirty to ensure it gets rebuilt if reused
         this.isDirty = true;
     }
 
     private isOutOfBounds(x: number, y: number, z: number): boolean {
-        return x < 0 || y < 0 || z < 0 ||
-            x >= CHUNK_SIZE || y >= CHUNK_SIZE || z >= CHUNK_SIZE;
+        return x < 0 || y < 0 || z < 0 || 
+               x >= CHUNK_SIZE || y >= CHUNK_SIZE || z >= CHUNK_SIZE;
     }
 
     private getBlockIndex(x: number, y: number, z: number): number {
         return (y * CHUNK_SIZE * CHUNK_SIZE) + (z * CHUNK_SIZE) + x;
     }
-
+    
     private getNeighborBlock(x: number, y: number, z: number): BlockType {
         // If the coordinates are within this chunk, use getBlock
         if (!this.isOutOfBounds(x, y, z)) {
             return this.getBlock(x, y, z);
         }
-
+        
         // Calculate world coordinates for the neighbor block
         const worldX = this.position.x * CHUNK_SIZE + x;
         const worldY = this.position.y * CHUNK_SIZE + y;
         const worldZ = this.position.z * CHUNK_SIZE + z;
-
+        
         try {
             // Use callback to query block from the world
             const blockType = this.getNeighborBlockCallback(worldX, worldY, worldZ);
-
+            
             // Validate the returned block type
             if (blockType === undefined || blockType === null) {
                 return BlockType.AIR; // Default to AIR for safety
             }
-
+            
             return blockType;
         } catch (e) {
             // If for any reason this fails, default to AIR
@@ -183,58 +180,51 @@ export class Chunk {
             const normals: number[] = [];
             const uvs: number[] = [];
             const indices: number[] = [];
-
-            let blockCount = 0;
-            let faceCount = 0;
-
+            
             // For each block in the chunk
             for (let y = 0; y < CHUNK_SIZE; y++) {
                 for (let z = 0; z < CHUNK_SIZE; z++) {
                     for (let x = 0; x < CHUNK_SIZE; x++) {
                         const blockType = this.getBlock(x, y, z);
-
+                        
                         // Skip air blocks - they don't need faces
                         if (blockType === BlockType.AIR) {
                             continue;
                         }
-
-                        blockCount++;
-
+                        
                         // Get block data
                         const blockData = Block.getBlockData(blockType);
-
+                        
                         // Check each face of the block
                         for (let d = 0; d < DIRECTIONS.length; d++) {
                             const dir = DIRECTIONS[d];
                             const nx = x + dir[0];
                             const ny = y + dir[1];
                             const nz = z + dir[2];
-
+                            
                             // Get neighbor block type (either in this chunk or from neighboring chunks)
                             const neighborType = this.getNeighborBlock(nx, ny, nz);
-
+                            
                             // ULTRA SIMPLE FACE VISIBILITY LOGIC:
-
+                            
                             // 1. If neighbor is AIR, always show the face
                             if (neighborType === BlockType.AIR) {
                                 this.addFace(
                                     positions, normals, uvs, indices,
                                     x, y, z, d, blockData.texture
                                 );
-                                faceCount++;
                                 continue;
                             }
-
+                            
                             // 2. If blocks are different types, show the face
                             if (blockType !== neighborType) {
                                 this.addFace(
                                     positions, normals, uvs, indices,
                                     x, y, z, d, blockData.texture
                                 );
-                                faceCount++;
                                 continue;
                             }
-
+                            
                             // 3. If both blocks are transparent, show face between them too
                             // (this helps with water, glass, etc.)
                             if (Block.isTransparent(blockType)) {
@@ -242,16 +232,12 @@ export class Chunk {
                                     positions, normals, uvs, indices,
                                     x, y, z, d, blockData.texture
                                 );
-                                faceCount++;
                             }
                         }
                     }
                 }
             }
-
-            // Log mesh statistics
-            console.log(`Chunk at (${this.position.x}, ${this.position.y}, ${this.position.z}) has ${blockCount} blocks and ${faceCount} faces`);
-
+            
             // If there are no faces to render, remove any existing mesh and return
             if (positions.length === 0) {
                 if (this.mesh) {
@@ -263,18 +249,18 @@ export class Chunk {
                 }
                 return;
             }
-
+            
             // Set geometry attributes
             geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
             geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
             geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
             geometry.setIndex(indices);
-
+            
             // Dispose of old geometry if it exists
             if (this.mesh && this.mesh.geometry) {
                 this.mesh.geometry.dispose();
             }
-
+            
             // Create material with better transparency settings
             const material = new THREE.MeshLambertMaterial({
                 map: this.textureManager.getTextureAtlas(),
@@ -284,11 +270,11 @@ export class Chunk {
                 depthWrite: true,
                 depthTest: true
             });
-
+            
             // Remove old mesh from scene
             if (this.mesh) {
                 this.scene.remove(this.mesh);
-
+                
                 // Dispose of materials
                 if (Array.isArray(this.mesh.material)) {
                     this.mesh.material.forEach(mat => {
@@ -298,28 +284,28 @@ export class Chunk {
                     this.mesh.material.dispose();
                 }
             }
-
+            
             // Create new mesh
             this.mesh = new THREE.Mesh(geometry, material);
             this.mesh.position.copy(this.worldPosition);
-
+            
             // Add to scene
             this.scene.add(this.mesh);
-
+            
         } catch (error) {
             console.error(`Error rebuilding mesh for chunk at (${this.position.x}, ${this.position.y}, ${this.position.z}):`, error);
         }
     }
 
     private addFace(
-        positions: number[],
-        normals: number[],
-        uvs: number[],
+        positions: number[], 
+        normals: number[], 
+        uvs: number[], 
         indices: number[],
-        x: number,
-        y: number,
-        z: number,
-        faceDir: number,
+        x: number, 
+        y: number, 
+        z: number, 
+        faceDir: number, 
         textures: { top: number, bottom: number, left: number, right: number, front: number, back: number }
     ): void {
         // Vertex positions for a cube face
@@ -337,7 +323,7 @@ export class Chunk {
             // Back face (z-)
             [1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0]
         ];
-
+        
         // Normal vectors for each face
         const normalVectors = [
             [0, 1, 0],  // Top
@@ -347,7 +333,7 @@ export class Chunk {
             [0, 0, 1],  // Front
             [0, 0, -1]  // Back
         ];
-
+        
         // Get texture index based on face direction
         let textureIndex: number;
         switch (faceDir) {
@@ -359,13 +345,13 @@ export class Chunk {
             case 5: textureIndex = textures.back; break;
             default: textureIndex = 0;
         }
-
+        
         // Calculate UV coordinates based on texture index
         const textureUVs = this.textureManager.getTextureCoordinates(textureIndex);
-
+        
         // Get current vertex count
         const vertexCount = positions.length / 3;
-
+        
         // Add vertices for this face
         const verts = vertexPositions[faceDir];
         for (let i = 0; i < 4; i++) {
@@ -374,11 +360,11 @@ export class Chunk {
                 (y + verts[i * 3 + 1]) * BLOCK_SIZE,
                 (z + verts[i * 3 + 2]) * BLOCK_SIZE
             );
-
+            
             // Add normal
             const normal = normalVectors[faceDir];
             normals.push(normal[0], normal[1], normal[2]);
-
+            
             // Add UV coordinates
             const uvCoords = [
                 [textureUVs.left, textureUVs.bottom],
@@ -386,36 +372,14 @@ export class Chunk {
                 [textureUVs.right, textureUVs.top],
                 [textureUVs.right, textureUVs.bottom]
             ];
-
+            
             uvs.push(uvCoords[i][0], uvCoords[i][1]);
         }
-
+        
         // Add indices for two triangles (making a quad)
         indices.push(
             vertexCount, vertexCount + 1, vertexCount + 2,
             vertexCount, vertexCount + 2, vertexCount + 3
         );
     }
-
-    // Count the number of non-AIR blocks in the chunk
-    public countNonAirBlocks(): number {
-        let count = 0;
-        for (let y = 0; y < CHUNK_SIZE; y++) {
-            for (let z = 0; z < CHUNK_SIZE; z++) {
-                for (let x = 0; x < CHUNK_SIZE; x++) {
-                    if (this.getBlock(x, y, z) !== BlockType.AIR) {
-                        count++;
-                    }
-                }
-            }
-        }
-        return count;
-    }
-
-    // Build the mesh immediately for initial loading
-    public buildInitialMesh(): void {
-        console.log(`Building initial mesh for chunk at (${this.position.x}, ${this.position.y}, ${this.position.z})`);
-        this.rebuildMesh();
-        this.isDirty = false;
-    }
-}
+} 

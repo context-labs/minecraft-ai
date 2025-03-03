@@ -283,24 +283,24 @@ export class TextureManager {
         this.configureTexture(this.textureAtlas);
         
         // Try to load the atlas.png
-        const loader = new THREE.TextureLoader();
-        console.log('Attempting to load texture atlas from /textures/atlas.png');
+        // const loader = new THREE.TextureLoader();
+        // console.log('Attempting to load texture atlas from /textures/atlas.png');
         
-        loader.load(
-            '/textures/atlas.png', 
-            (texture) => {
-                console.log('Texture atlas loaded successfully');
-                this.textureAtlas = texture;
-                this.configureTexture(this.textureAtlas);
-                this.isLoaded = true;
-            },
-            (xhr) => {
-                console.log(`Texture atlas loading: ${(xhr.loaded / xhr.total * 100)}%`);
-            },
-            (err) => {
-                console.warn('Failed to load texture atlas, using fallback', err);
-            }
-        );
+        // loader.load(
+        //     '/textures/atlas.png', 
+        //     (texture) => {
+        //         console.log('Texture atlas loaded successfully');
+        //         this.textureAtlas = texture;
+        //         this.configureTexture(this.textureAtlas);
+        //         this.isLoaded = true;
+        //     },
+        //     (xhr) => {
+        //         console.log(`Texture atlas loading: ${(xhr.loaded / xhr.total * 100)}%`);
+        //     },
+        //     (err) => {
+        //         console.warn('Failed to load texture atlas, using fallback', err);
+        //     }
+        // );
     }
     
     private configureTexture(texture: THREE.Texture): void {

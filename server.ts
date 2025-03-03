@@ -130,24 +130,6 @@ const server: ReturnType<typeof serve> = serve({
                 // Simple rate limiting - check if this IP has requested recently
                 const clientIP = req.headers.get('x-forwarded-for') || 'unknown';
                 const now = Date.now();
-                const lastRequestTime = worldStateRequestTimes.get(clientIP) || 0;
-                
-                // Allow requests once every 5 seconds per IP
-                if (now - lastRequestTime < 5000) {
-                    return new Response(JSON.stringify({ 
-                        error: 'Rate limit exceeded. Please wait before requesting again.' 
-                    }), {
-                        status: 429,
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Access-Control-Allow-Origin': '*',
-                            'Retry-After': '5'
-                        }
-                    });
-                }
-                
-                // Update last request time
-                worldStateRequestTimes.set(clientIP, now);
                 
                 // Convert currentWorldState map to an array of objects for JSON serialization
                 const blocks = Array.from(gameState.currentWorldState.entries()).map(([posKey, blockData]) => {

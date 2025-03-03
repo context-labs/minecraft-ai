@@ -594,12 +594,15 @@ export class NetworkManager {
                 console.log(`Attempting to fetch world state from ${serverUrl}/api/world-state (attempt ${retryCount + 1}/${maxRetries})`);
                 
                 const response = await fetch(`${serverUrl}/api/world-state`);
+
+                console.log(response.ok);
                 
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 
                 const data = await response.json();
+                console.log(data);
                 console.log(`Received world state via HTTP with ${data.blocks.length} blocks`);
                 
                 // Convert the optimized block format back to the expected format
