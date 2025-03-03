@@ -1,0 +1,8 @@
+version: 2
+authtoken: ${NGROK_AUTH_TOKEN}
+
+tunnels:
+  minecraft:
+    proto: http
+    addr: 3000
+    domain: cc.ngrok.pro 

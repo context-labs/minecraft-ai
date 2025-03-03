@@ -879,4 +879,14 @@ export class Player {
             this.miningSound.currentTime = 0;
         }
     }
+
+    // Add a method to set player position
+    public setPosition(x: number, y: number, z: number): void {
+        this.position.set(x, y, z);
+        
+        // If controls are initialized, update the camera position as well
+        if (this.controls) {
+            this.controls.getObject().position.set(x, y, z);
+        }
+    }
 } 

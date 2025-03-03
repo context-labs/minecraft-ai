@@ -3,6 +3,7 @@ import { createNoise2D, createNoise3D } from 'simplex-noise';
 import { Chunk, CHUNK_SIZE, BLOCK_SIZE } from './Chunk';
 import { BlockType } from './Block';
 import { TextureManager } from '../utils/TextureManager';
+import { NetworkManager } from '../core/NetworkManager';
 
 // Constants for world generation
 const RENDER_DISTANCE = 8; // Chunks
@@ -39,6 +40,7 @@ export class World {
     private noise2D: (x: number, y: number) => number;
     private noise3D: (x: number, y: number, z: number) => number;
     private biomeNoise: (x: number, y: number) => number;
+    private networkManager?: NetworkManager;
     
     // Ore configurations
     private oreConfigs: OreConfig[] = [
@@ -129,7 +131,7 @@ export class World {
         return chunk.getBlock(localX, localY, localZ);
     }
     
-    public setBlock(x: number, y: number, z: number, type: BlockType): void {
+    public setBlock(x: number, y: number, z: number, type: BlockType, broadcastUpdate: boolean = true): void {
         // Convert world coordinates to chunk coordinates
         const chunkX = Math.floor(x / CHUNK_SIZE);
         const chunkY = Math.floor(y / CHUNK_SIZE);
@@ -258,6 +260,11 @@ export class World {
             // This is the key fix - we mark all chunks dirty first, THEN update them all
             // This ensures consistent state when chunks query each other
             adjacentChunks.forEach(chunk => chunk.update());
+        }
+        
+        // Only broadcast if the flag is true
+        if (broadcastUpdate && this.networkManager) {
+            this.networkManager.sendBlockUpdate(x, y, z, type);
         }
     }
     
