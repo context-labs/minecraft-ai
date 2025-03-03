@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { BlockType } from '../world/Block';
 import { World } from '../world/World';
 import { Player } from '../player/Player';
+import { TextureManager } from '../utils/TextureManager';
+;
 
 // Message types match server
 enum MessageType {
@@ -11,7 +13,9 @@ enum MessageType {
     BLOCK_UPDATE = 'block_update',
     INITIAL_STATE = 'initial_state',
     WORLD_STATE = 'world_state',
-    CHAT = 'chat'
+    CHAT = 'chat',
+    CHUNK_REQUEST = 'chunk_request',
+    CHUNK_DATA = 'chunk_data'
 }
 
 // Constants for real-time updates
@@ -36,7 +40,7 @@ export class RemotePlayer {
     private interpolationStart: number = 0;
     private interpolationDuration: number = INTERPOLATION_DURATION;
 
-    constructor(data: any, scene: THREE.Scene, textureManager: any) {
+    constructor(data: any, scene: THREE.Scene, textureManager: TextureManager) {
         this.id = data.id;
         this.position = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
         this.rotation = { x: data.rotation.x, y: data.rotation.y };
@@ -54,7 +58,7 @@ export class RemotePlayer {
         this.updatePositionAndRotation();
     }
 
-    private createPlayerMesh(textureManager: any): THREE.Group {
+    private createPlayerMesh(textureManager: TextureManager): THREE.Group {
         const group = new THREE.Group();
 
         const bodyGeometry = new THREE.BoxGeometry(0.6, 1.8, 0.6);
@@ -149,29 +153,57 @@ export interface ChatMessage {
 export class NetworkManager {
     private socket: WebSocket | null = null;
     private connected: boolean = false;
-    private world: World;
     private player: Player;
+    private world: World;
     private scene: THREE.Scene;
+    private textureManager: TextureManager;
     private remotePlayers: Map<string, RemotePlayer> = new Map();
-    private pendingUpdates: Array<{ type: string; data: any }> = [];
+    private pendingBlockUpdates: Array<{ position: THREE.Vector3, blockType: BlockType }> = [];
+    private pendingChunkRequests: Set<string> = new Set();
+    private loadedChunks: Set<string> = new Set();
+    private serverTimeOffset: number = 0;
+    private lastPositionUpdate: number = 0;
+    private lastRotationUpdate: number = 0;
+    private lastSentPosition: THREE.Vector3 | null = null;
+    private lastSentRotation: THREE.Euler | null = null;
+    private lastSentBlockType: BlockType = BlockType.DIRT;
+    private chatListeners: Array<(message: any) => void> = [];
+    public onInitialStateReceived: (() => void) | null = null;
+    
+    // Add missing properties
+    private playerId: string = '';
+    private username: string = '';
+    private lastPlayerUpdateTime: number = 0;
+    
     private updateInterval: number | null = null;
-    private chatMessages: ChatMessage[] = [];
-    private chatListeners: Array<(message: ChatMessage) => void> = [];
-    private textureManager: any;
-
-    private lastSentPosition: THREE.Vector3 = new THREE.Vector3();
-    private lastSentRotation: { x: number; y: number } = { x: 0, y: 0 };
-    private lastSentBlockType: BlockType = 0;
-    private lastUpdateTime: number = 0;
-
-    constructor(world: World, player: Player, scene: THREE.Scene, textureManager: any) {
-        this.world = world;
+    private pendingUpdates: any[] = [];
+    private chatMessages: any[] = [];
+    
+    constructor(player: Player, world: World, scene: THREE.Scene, textureManager: TextureManager) {
         this.player = player;
+        this.world = world;
         this.scene = scene;
         this.textureManager = textureManager;
+        
+        // Set the network manager reference in the world
+        this.world.setNetworkManager(this);
+    }
+    
+    // Add missing method
+    private addRemotePlayer(playerData: any): void {
+        if (!playerData.id) {
+            console.error('Cannot add remote player: missing ID');
+            return;
+        }
+        
+        console.log(`Adding remote player: ${playerData.id}`);
+        this.remotePlayers.set(
+            playerData.id,
+            new RemotePlayer(playerData, this.scene, this.textureManager)
+        );
     }
 
-    public update(deltaTime: number, timestamp: number): void {
+    public update(_deltaTime: number, timestamp: number): void {
         this.remotePlayers.forEach((player) => player.interpolate(timestamp));
     }
 
@@ -213,6 +245,9 @@ export class NetworkManager {
             case MessageType.CHAT:
                 this.handleChatMessage(message.data);
                 break;
+            case MessageType.CHUNK_DATA:
+                this.handleChunkData(message.data);
+                break;
         }
     }
 
@@ -232,8 +267,7 @@ export class NetworkManager {
         console.log(`Player joined: ${data.username} (${data.id})`);
 
         // Create new remote player
-        const remotePlayer = new RemotePlayer(data, this.scene, this.textureManager);
-        this.remotePlayers.set(data.id, remotePlayer);
+        this.addRemotePlayer(data);
 
         // Display a chat message about the player joining
         this.handleChatMessage({
@@ -278,8 +312,7 @@ export class NetworkManager {
         } else {
             // Player not found, create new remote player
             console.log(`Creating new remote player: ${data.id}`);
-            const newPlayer = new RemotePlayer(data, this.scene, this.textureManager);
-            this.remotePlayers.set(data.id, newPlayer);
+            this.addRemotePlayer(data);
         }
     }
 
@@ -294,51 +327,67 @@ export class NetworkManager {
     }
 
     private handleInitialState(data: any): void {
-        // Process all existing players
-        data.players.forEach((playerData: any) => {
-            if (playerData.id !== this.player.id) {
-                this.remotePlayers.set(
-                    playerData.id,
-                    new RemotePlayer(playerData, this.scene, this.textureManager)
-                );
+        console.log('Received initial state from server:', data);
+        
+        // Store player ID and username if provided
+        if (data.playerId) {
+            this.playerId = data.playerId;
+            console.log(`Set player ID to ${this.playerId}`);
+        }
+        
+        if (data.username) {
+            this.username = data.username;
+            console.log(`Set username to ${this.username}`);
+        }
+        
+        // Calculate server time offset
+        const serverTime = data.timestamp;
+        const clientTime = Date.now();
+        this.serverTimeOffset = serverTime - clientTime;
+        console.log(`Server time offset: ${this.serverTimeOffset}ms`);
+        
+        // Set world seed from server
+        if (data.worldSeed !== undefined) {
+            console.log(`Setting world seed from server: ${data.worldSeed}`);
+            this.world.setWorldSeed(data.worldSeed);
+        } else {
+            console.warn('No world seed provided in initial state');
+        }
+        
+        // Process existing players
+        if (data.players) {
+            console.log(`Processing ${data.players.length} players from initial state`);
+            for (const playerData of data.players) {
+                // Skip if it's the local player
+                if (playerData.id === this.playerId) {
+                    continue;
+                }
+                
+                this.addRemotePlayer(playerData);
             }
-        });
-
-        // Process world state - apply current blocks without sending updates back
+        }
+        
+        // Process existing world state
         if (data.worldState) {
-            // Use current world state map instead of updates array
+            console.log(`Processing ${Object.keys(data.worldState).length} block updates from initial state`);
             for (const [posKey, blockData] of Object.entries(data.worldState)) {
-                const [x, y, z] = posKey.split(',').map(Number);
-                // Set block locally without sending update to server
-                this.world.setBlockTypeAtCoordinates(x, y, z, blockData.blockType, false);
-            }
-        } else if (data.worldUpdates) {
-            // Legacy support for worldUpdates array if server hasn't been updated
-            data.worldUpdates.forEach((update: any) => {
-                const { position, blockType } = update;
-                // Set block locally without sending update to server
+                const position = posKey.split(',').map(Number);
+                const blockType = (blockData as any).blockType;
+                
+                // Update the world without broadcasting back to server
                 this.world.setBlockTypeAtCoordinates(
-                    position.x,
-                    position.y,
-                    position.z,
+                    position[0], position[1], position[2],
                     blockType,
-                    false
+                    false // Don't broadcast back to server
                 );
-            });
+            }
         }
-
-        // Process chat messages if available
-        if (data.chatMessages) {
-            data.chatMessages.forEach((message: ChatMessage) => {
-                this.handleChatMessage(message);
-            });
+        
+        // Notify that initial state has been received
+        if (this.onInitialStateReceived) {
+            console.log('Calling onInitialStateReceived callback');
+            this.onInitialStateReceived();
         }
-
-        console.log('Received initial state:', {
-            players: data.players.length,
-            worldBlocks: data.worldState ? Object.keys(data.worldState).length : 
-                        (data.worldUpdates ? data.worldUpdates.length : 0)
-        });
     }
 
     private handleChatMessage(data: ChatMessage): void {
@@ -395,7 +444,7 @@ export class NetworkManager {
         const MIN_UPDATE_INTERVAL = 50; // Reduced to 50ms (max 20 updates/sec)
 
         // Only proceed if minimum time has passed
-        if (currentTime - this.lastUpdateTime < MIN_UPDATE_INTERVAL) {
+        if (currentTime - this.lastPlayerUpdateTime < MIN_UPDATE_INTERVAL) {
             return;
         }
 
@@ -406,6 +455,15 @@ export class NetworkManager {
         // Use thresholds for responsive updates but eliminate unnecessary updates
         const POSITION_THRESHOLD = 0.03; // Only send position updates if moved more than 3cm
         const ROTATION_THRESHOLD = 0.01; // Only send rotation updates if rotated more than ~0.5 degree
+
+        // Initialize position and rotation if null
+        if (this.lastSentPosition === null) {
+            this.lastSentPosition = new THREE.Vector3();
+        }
+        
+        if (this.lastSentRotation === null) {
+            this.lastSentRotation = new THREE.Euler();
+        }
 
         // Check if position has changed significantly
         const positionChanged = this.lastSentPosition.distanceTo(playerPosition) > POSITION_THRESHOLD;
@@ -436,17 +494,43 @@ export class NetworkManager {
 
             // Update last sent values
             this.lastSentPosition.copy(playerPosition);
-            this.lastSentRotation = { x: rotationX, y: rotationY };
+            this.lastSentRotation = new THREE.Euler(rotationX, rotationY, 0, 'YXZ');
             this.lastSentBlockType = selectedBlockType;
-            this.lastUpdateTime = currentTime;
+            this.lastPlayerUpdateTime = currentTime;
         }
     }
 
+    // Send a block update to the server
     public sendBlockUpdate(x: number, y: number, z: number, blockType: BlockType): void {
-        this.sendMessage(MessageType.BLOCK_UPDATE, {
-            position: { x, y, z },
-            blockType
-        });
+        console.log(`NetworkManager.sendBlockUpdate called: x=${x}, y=${y}, z=${z}, type=${blockType}`);
+        
+        // Store the last sent block type for debugging
+        this.lastSentBlockType = blockType;
+        
+        // If not connected, queue the update
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            console.log(`Not connected to server, queueing block update`);
+            this.pendingUpdates.push({
+                type: MessageType.BLOCK_UPDATE,
+                data: {
+                    position: { x, y, z },
+                    blockType
+                }
+            });
+            return;
+        }
+        
+        // Send the update to the server
+        const message = {
+            type: MessageType.BLOCK_UPDATE,
+            data: {
+                position: { x, y, z },
+                blockType
+            }
+        };
+        
+        console.log(`Sending block update to server: ${JSON.stringify(message)}`);
+        this.socket.send(JSON.stringify(message));
     }
 
     public sendChatMessage(message: string): void {
@@ -491,5 +575,50 @@ export class NetworkManager {
 
     public getChatHistory(): ChatMessage[] {
         return [...this.chatMessages];
+    }
+
+    // Mark a chunk as loaded
+    public markChunkLoaded(chunkKey: string): void {
+        console.log(`Marking chunk ${chunkKey} as loaded`);
+        this.loadedChunks.add(chunkKey);
+        this.pendingChunkRequests.delete(chunkKey);
+    }
+    
+    // Handle chunk data received from server
+    private handleChunkData(data: any): void {
+        const { x, y, z, blocks } = data;
+        const chunkKey = `${x},${y},${z}`;
+        
+        console.log(`Received chunk data for (${x}, ${y}, ${z}) with ${blocks.length} blocks`);
+        
+        // Remove from pending requests
+        this.pendingChunkRequests.delete(chunkKey);
+        
+        // Load the chunk into the world
+        this.world.loadChunkFromData(x, y, z, blocks);
+    }
+    
+    // Request a chunk from the server
+    public requestChunk(x: number, y: number, z: number): void {
+        if (!this.socket || !this.connected) {
+            console.error('Cannot request chunk: not connected to server');
+            return;
+        }
+        
+        const chunkKey = `${x},${y},${z}`;
+        
+        // Don't request chunks that are already loaded or pending
+        if (this.loadedChunks.has(chunkKey) || this.pendingChunkRequests.has(chunkKey)) {
+            console.log(`Chunk ${chunkKey} already loaded or pending, skipping request`);
+            return;
+        }
+        
+        console.log(`Sending chunk request for (${x}, ${y}, ${z})`);
+        
+        // Add to pending requests
+        this.pendingChunkRequests.add(chunkKey);
+        
+        // Send request to server
+        this.sendMessage(MessageType.CHUNK_REQUEST, { x, y, z });
     }
 }

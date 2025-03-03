@@ -9,7 +9,7 @@ import { TextureManager } from '../utils/TextureManager';
 
 // Create a simple temporary ChatUI class
 class ChatUI {
-    constructor(networkManager: any) {
+    constructor(_networkManager: any) {
         // Simple constructor
     }
     
@@ -76,7 +76,7 @@ export class Engine {
         
         // Initialize network manager
         console.log('Initializing NetworkManager...');
-        this.networkManager = new NetworkManager(this.world, this.player, this.scene, this.textureManager);
+        this.networkManager = new NetworkManager(this.player, this.world, this.scene, this.textureManager);
         
         // Initialize chat UI
         console.log('Initializing ChatUI...');
@@ -98,13 +98,14 @@ export class Engine {
     private hookPlayerBlockUpdates(): void {
         // Monkey-patch the player's block setting methods
         const originalSetBlock = this.world.setBlock.bind(this.world);
-        this.world.setBlock = (x: number, y: number, z: number, type: number) => {
-            // Call the original method
-            originalSetBlock(x, y, z, type);
+        this.world.setBlock = (x: number, y: number, z: number, type: number, broadcastUpdate: boolean = true) => {
+            console.log(`Block set request: x=${x}, y=${y}, z=${z}, type=${type}, broadcast=${broadcastUpdate}`);
             
-            // Send the update to the network
-            console.log(`Sending block update: x=${x}, y=${y}, z=${z}, type=${type}`);
-            // this.networkManager.sendBlockUpdate(x, y, z, type);
+            // Call the original method - it will handle broadcasting internally
+            originalSetBlock(x, y, z, type, broadcastUpdate);
+            
+            // DO NOT send the update to the network here - that's already handled in the World class
+            // This was causing double broadcasting
         };
     }
     
@@ -114,15 +115,27 @@ export class Engine {
             this.isRunning = true;
             this.clock.start();
             
-            console.log('Generating world...');
-            this.world.generate();
-            
             console.log('Connecting to network...');
+            // Connect to network first, before generating world
             this.networkManager.connect();
             
-            console.log('Starting game loop...');
-            this.gameLoop();
+            // CRITICAL: Don't start the game loop immediately
+            // Instead, wait for the network connection to be established
+            // and the world to be initialized with the server seed
+            console.log('Waiting for server world data before starting game loop...');
+            
+            // The NetworkManager will call startGameLoop when it receives the initial state
+            this.networkManager.onInitialStateReceived = () => {
+                console.log('Initial state received, starting game loop...');
+                this.startGameLoop();
+            };
         }
+    }
+    
+    // New method to be called by NetworkManager after initial state is received
+    public startGameLoop(): void {
+        console.log('Starting game loop...');
+        this.gameLoop();
     }
     
     public stop(): void {
@@ -140,7 +153,9 @@ export class Engine {
         
         // Update game components
         this.player.update(deltaTime);
-        this.world.update(deltaTime, this.player.getPosition());
+        
+        // Update world with player position only - deltaTime is no longer needed
+        this.world.update(this.player.getPosition());
         
         // Make sure NetworkManager.update is called with both deltaTime and timestamp
         this.networkManager.update(deltaTime, timestamp);

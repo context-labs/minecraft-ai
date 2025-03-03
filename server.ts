@@ -23,17 +23,57 @@ interface GameState {
         blockType: number;
         timestamp: number;
     }>;
+    worldSeed: number;
 }
 
-// Initialize game state
+// Add a constant for world generation parameters
+const WORLD_SIZE = 10; // Number of chunks in each direction from origin
+const WORLD_HEIGHT = 8; // Number of vertical chunks
+
+// Add a map to store pre-generated chunks
+const worldChunks: Map<string, Array<{ x: number, y: number, z: number, type: number }>> = new Map();
+
+// Add a function to get chunk key
+function getChunkKey(x: number, y: number, z: number): string {
+    return `${x},${y},${z}`;
+}
+
+// Initialize game state with a fixed seed
 const gameState: GameState = {
     players: new Map<string, Player>(),
     worldUpdates: [],
     currentWorldState: new Map<string, {
         blockType: number;
         timestamp: number;
-    }>()
+    }>(),
+    worldSeed: 12345 // Fixed seed for consistent generation
 };
+
+// Generate the entire world at server startup
+function generateWorld() {
+    console.log("Generating world on server with seed:", gameState.worldSeed);
+    
+    // Generate chunks in a square around origin
+    for (let x = -WORLD_SIZE; x <= WORLD_SIZE; x++) {
+        for (let z = -WORLD_SIZE; z <= WORLD_SIZE; z++) {
+            for (let y = 0; y < WORLD_HEIGHT; y++) {
+                const chunkKey = getChunkKey(x, y, z);
+                const chunkData = generateChunkData(x, y, z);
+                worldChunks.set(chunkKey, chunkData);
+                
+                // Log progress periodically
+                if ((x + WORLD_SIZE) % 5 === 0 && (z + WORLD_SIZE) % 5 === 0 && y === 0) {
+                    console.log(`Generated chunk at (${x}, ${y}, ${z})`);
+                }
+            }
+        }
+    }
+    
+    console.log(`World generation complete. Generated ${worldChunks.size} chunks.`);
+}
+
+// Call world generation at startup
+generateWorld();
 
 // Helper functions for position conversions
 function positionToKey(position: { x: number, y: number, z: number }): string {
@@ -48,12 +88,8 @@ function keyToPosition(key: string): { x: number, y: number, z: number } {
 // Add constants for distance-based updates
 const MAX_BLOCK_UPDATE_DISTANCE = 500; // Increased from 200 to 500 for larger view distance
 
-// Define a constant spawn point for all players
-const SPAWN_POINT = {
-    x: 0,
-    y: 50,  // Start high enough to avoid spawning inside terrain
-    z: 0
-};
+// Define a constant spawn point for players
+const SPAWN_POINT = { x: 0, y: 48, z: 0 };
 
 // Define content types
 const contentTypes: Record<string, string> = {
@@ -77,7 +113,9 @@ enum MessageType {
     BLOCK_UPDATE = 'block_update',
     INITIAL_STATE = 'initial_state',
     WORLD_STATE = 'world_state',
-    CHAT = 'chat'
+    CHAT = 'chat',
+    CHUNK_REQUEST = 'chunk_request',
+    CHUNK_DATA = 'chunk_data'
 }
 
 interface Message {
@@ -97,7 +135,7 @@ const server = serve({
         
         // Handle WebSocket upgrade
         if (path === '/ws') {
-            const success = server.upgrade(req, {
+            const success: boolean = server.upgrade(req, {
                 data: { id: crypto.randomUUID() }
             });
             return success ? undefined : new Response("WebSocket upgrade failed", { status: 400 });
@@ -177,7 +215,6 @@ const server = serve({
                 
                 switch (parsedMessage.type) {
                     case MessageType.PLAYER_UPDATE:
-                        
                         handlePlayerUpdate(playerId, parsedMessage.data);
                         break;
                     case MessageType.BLOCK_UPDATE:
@@ -185,6 +222,9 @@ const server = serve({
                         break;
                     case MessageType.CHAT:
                         broadcastChatMessage(playerId, parsedMessage.data);
+                        break;
+                    case MessageType.CHUNK_REQUEST:
+                        handleChunkRequest(ws, parsedMessage.data);
                         break;
                 }
             } catch (error) {
@@ -207,26 +247,35 @@ const server = serve({
     }
 });
 
-// Send initial state to new player
+// Send initial state to a new player
 function sendInitialState(ws: ServerWebSocket<{ id: string }>, playerId: string) {
-    const initialPlayers = Array.from(gameState.players.entries())
-        .filter(([id]) => id !== playerId)
-        .map(([_, player]) => player);
+    console.log(`Sending initial state to player ${playerId}`);
     
-    // Convert currentWorldState map to an array of objects for JSON serialization
-    const currentWorld = Array.from(gameState.currentWorldState.entries()).map(([posKey, blockData]) => {
-        return {
-            position: keyToPosition(posKey),
+    // Create array of initial players (excluding the new player)
+    const initialPlayers = [];
+    for (const [id, player] of gameState.players.entries()) {
+        if (id !== playerId) {
+            initialPlayers.push(player);
+        }
+    }
+    
+    // Convert the current world state to an array of objects for JSON
+    const worldState = {};
+    for (const [posKey, blockData] of gameState.currentWorldState.entries()) {
+        worldState[posKey] = {
             blockType: blockData.blockType,
             timestamp: blockData.timestamp
         };
-    });
+    }
     
+    // Send the initial state message
     ws.send(JSON.stringify({
         type: MessageType.INITIAL_STATE,
         data: {
+            playerId,
             players: initialPlayers,
-            worldState: currentWorld,
+            worldState,
+            worldSeed: gameState.worldSeed,
             timestamp: Date.now()
         }
     }));
@@ -375,6 +424,157 @@ function broadcastChatMessage(playerId: string, data: any) {
             }
         }));
     }
+}
+
+// Modify the handleChunkRequest function to return pre-generated chunks
+function handleChunkRequest(ws: ServerWebSocket<{ id: string }>, data: { x: number, y: number, z: number }) {
+    const { x, y, z } = data;
+    console.log(`Received chunk request for (${x}, ${y}, ${z})`);
+    
+    // Get the chunk from pre-generated world
+    const chunkKey = getChunkKey(x, y, z);
+    const chunkData = worldChunks.get(chunkKey) || [];
+    
+    // Send chunk data back to client
+    ws.send(JSON.stringify({
+        type: MessageType.CHUNK_DATA,
+        data: {
+            x,
+            y,
+            z,
+            blocks: chunkData
+        }
+    }));
+    
+    console.log(`Sent chunk data for (${x}, ${y}, ${z}) with ${chunkData.length} blocks`);
+}
+
+// Generate chunk data for a given chunk position
+function generateChunkData(chunkX: number, chunkY: number, chunkZ: number) {
+    console.log(`Generating chunk data for (${chunkX}, ${chunkY}, ${chunkZ})`);
+    
+    const blocks = [];
+    const CHUNK_SIZE = 16;
+    
+    // Generate a flat platform at the spawn area
+    if (chunkY == 3 && chunkX >= -2 && chunkX <= 2 && chunkZ >= -2 && chunkZ <= 2) {
+        console.log(`Generating spawn platform at chunk (${chunkX}, ${chunkY}, ${chunkZ})`);
+        
+        // Create a flat platform at y=48 (which is in chunk 3)
+        for (let x = 0; x < CHUNK_SIZE; x++) {
+            for (let z = 0; z < CHUNK_SIZE; z++) {
+                // Only add blocks at y=0 of the chunk (which is y=48 in world coordinates)
+                blocks.push({
+                    x: x,
+                    y: 0,
+                    z: z,
+                    type: 2 // Grass block
+                });
+                
+                // Add dirt below the grass
+                for (let y = 1; y < 4; y++) {
+                    blocks.push({
+                        x: x,
+                        y: y,
+                        z: z,
+                        type: 3 // Dirt block
+                    });
+                }
+                
+                // Add stone below the dirt
+                for (let y = 4; y < CHUNK_SIZE; y++) {
+                    blocks.push({
+                        x: x,
+                        y: y,
+                        z: z,
+                        type: 1 // Stone block
+                    });
+                }
+            }
+        }
+    } 
+    // Generate normal terrain for other chunks
+    else {
+        // Use a simple height function based on chunk coordinates
+        for (let x = 0; x < CHUNK_SIZE; x++) {
+            for (let z = 0; z < CHUNK_SIZE; z++) {
+                // Calculate world coordinates
+                const worldX = chunkX * CHUNK_SIZE + x;
+                const worldZ = chunkZ * CHUNK_SIZE + z;
+                
+                // Generate a height value using a simple function
+                // This creates rolling hills with a height between 32 and 64
+                const height = Math.floor(
+                    48 + 
+                    Math.sin(worldX * 0.1) * 8 + 
+                    Math.cos(worldZ * 0.1) * 8 +
+                    Math.sin(worldX * 0.05 + worldZ * 0.05) * 16
+                );
+                
+                // Calculate the local Y coordinate within this chunk
+                const minY = chunkY * CHUNK_SIZE;
+                const maxY = minY + CHUNK_SIZE;
+                
+                // Only add blocks if the height is within this chunk's Y range
+                if (height >= minY && height < maxY) {
+                    const localY = height - minY;
+                    
+                    // Add a grass block at the surface
+                    blocks.push({
+                        x: x,
+                        y: localY,
+                        z: z,
+                        type: 2 // Grass block
+                    });
+                    
+                    // Add dirt blocks below the surface
+                    for (let y = localY - 1; y >= 0 && y > localY - 4; y--) {
+                        if (y >= 0 && y < CHUNK_SIZE) {
+                            blocks.push({
+                                x: x,
+                                y: y,
+                                z: z,
+                                type: 3 // Dirt block
+                            });
+                        }
+                    }
+                    
+                    // Add stone blocks deeper down
+                    for (let y = Math.max(0, localY - 4); y >= 0; y--) {
+                        blocks.push({
+                            x: x,
+                            y: y,
+                            z: z,
+                            type: 1 // Stone block
+                        });
+                    }
+                }
+                // If we're below the height, fill with stone or other blocks
+                else if (maxY <= height) {
+                    // This chunk is completely below the surface, fill with appropriate blocks
+                    for (let y = 0; y < CHUNK_SIZE; y++) {
+                        // Determine block type based on depth
+                        let blockType = 1; // Default to stone
+                        
+                        // If we're close to the surface, use dirt
+                        if (height - (minY + y) < 4) {
+                            blockType = 3; // Dirt
+                        }
+                        
+                        blocks.push({
+                            x: x,
+                            y: y,
+                            z: z,
+                            type: blockType
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    console.log(`Generated ${blocks.length} blocks for chunk (${chunkX}, ${chunkY}, ${chunkZ})`);
+    return blocks;
 }
 
 console.log(`Server running at http://localhost:${server.port}`); 
