@@ -3,7 +3,7 @@
   "module": "index.ts",
   "type": "module",
   "scripts": {
-    "start": "bun run build.ts && bun run server.ts",
+    "start": "bun run server.ts",
     "build": "bun run build.ts",
     "dev": "bun run --watch server.ts",
     "start:ngrok": "ngrok http --url=cc.ngrok.pro 3000"
