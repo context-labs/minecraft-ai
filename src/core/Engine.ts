@@ -4,6 +4,7 @@ import { Player } from '../player/Player';
 import { DebugUI } from '../ui/DebugUI';
 import { NetworkManager } from './NetworkManager';
 import { TextureManager } from '../utils/TextureManager';
+import { CombatManager } from '../combat/CombatManager';
 // Fix the ChatUI import error by commenting it out for now
 // import { ChatUI } from '../ui/ChatUI';
 
@@ -37,6 +38,7 @@ export class Engine {
     private networkManager: NetworkManager;
     private textureManager: TextureManager;
     private chatUI: ChatUI;
+    private combatManager: CombatManager;
 
     constructor() {
         console.log('Initializing Engine...');
@@ -84,6 +86,15 @@ export class Engine {
         
         // Initialize clock for frame rate independent movement
         this.clock = new THREE.Clock();
+        
+        // Initialize the combat manager
+        this.combatManager = new CombatManager(this.scene, this.world, this.networkManager);
+        
+        // Set the combat manager in the player
+        this.player.setCombatManager(this.combatManager);
+        
+        // Register the player with the combat manager
+        this.combatManager.registerPlayer(this.player);
         
         // Handle window resize
         window.addEventListener('resize', this.onWindowResize.bind(this));
@@ -156,6 +167,7 @@ export class Engine {
         // Update game components
         this.player.update(deltaTime);
         this.world.update(deltaTime, this.player.getPosition());
+        this.combatManager.update(deltaTime);
         
         // Make sure NetworkManager.update is called with both deltaTime and timestamp
         this.networkManager.update(deltaTime, timestamp);

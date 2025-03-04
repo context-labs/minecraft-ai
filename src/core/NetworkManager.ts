@@ -11,7 +11,12 @@ enum MessageType {
     BLOCK_UPDATE = 'block_update',
     INITIAL_STATE = 'initial_state',
     WORLD_STATE = 'world_state',
-    CHAT = 'chat'
+    CHAT = 'chat',
+    // Combat-related message types
+    PLAYER_ATTACK = 'player_attack',
+    PLAYER_DAMAGE = 'player_damage',
+    PROJECTILE_SPAWN = 'projectile_spawn',
+    PROJECTILE_HIT = 'projectile_hit'
 }
 
 // Constants for real-time updates
@@ -231,6 +236,19 @@ export class NetworkManager {
                     break;
                 case MessageType.CHAT:
                     this.handleChatMessage(message.data);
+                    break;
+                // Combat-related message handling
+                case MessageType.PLAYER_ATTACK:
+                    this.handlePlayerAttack(message.data);
+                    break;
+                case MessageType.PLAYER_DAMAGE:
+                    this.handlePlayerDamage(message.data);
+                    break;
+                case MessageType.PROJECTILE_SPAWN:
+                    this.handleProjectileSpawn(message.data);
+                    break;
+                case MessageType.PROJECTILE_HIT:
+                    this.handleProjectileHit(message.data);
                     break;
             }
         } catch (error) {
@@ -670,5 +688,190 @@ export class NetworkManager {
     public static setDebugLogging(enable: boolean): void {
         NetworkManager.DEBUG_LOGGING = enable;
         console.log(`Network debug logging ${enable ? 'enabled' : 'disabled'}`);
+    }
+
+    // Combat-related message handlers
+    private handlePlayerAttack(data: any): void {
+        // Get the player who attacked
+        const attackerId = data.playerId;
+        const attacker = this.remotePlayers.get(attackerId);
+        
+        if (attacker) {
+            console.log(`Player ${attackerId} attacked with weapon type ${data.weaponType}`);
+            // TODO: Implement visual effects for attack
+        }
+    }
+    
+    private handlePlayerDamage(data: any): void {
+        // Get the player who was damaged
+        const targetId = data.targetId;
+        
+        // Check if the damaged player is the local player
+        if (targetId === this.getPlayerId()) {
+            // Apply damage to local player
+            this.player.takeDamage(data.damage, null, data.isHeadshot);
+        } else {
+            // Handle remote player damage
+            const targetPlayer = this.remotePlayers.get(targetId);
+            if (targetPlayer) {
+                console.log(`Player ${targetId} took ${data.damage} damage`);
+                // TODO: Implement visual effects for damage
+            }
+        }
+    }
+    
+    private handleProjectileSpawn(data: any): void {
+        // Get the player who spawned the projectile
+        const ownerId = data.ownerId;
+        const owner = ownerId === this.getPlayerId() ? this.player : this.remotePlayers.get(ownerId);
+        
+        if (owner) {
+            // Create projectile
+            const position = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
+            const velocity = new THREE.Vector3(data.velocity.x, data.velocity.y, data.velocity.z);
+            
+            // Create projectile in the world
+            // TODO: Implement projectile creation
+            console.log(`Projectile spawned by ${ownerId} at ${position.x}, ${position.y}, ${position.z}`);
+        }
+    }
+    
+    private handleProjectileHit(data: any): void {
+        // Handle projectile hit effects
+        const position = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
+        
+        // Create hit effect at position
+        // TODO: Implement hit effect
+        console.log(`Projectile hit at ${position.x}, ${position.y}, ${position.z}`);
+        
+        // If a player was hit, handle damage
+        if (data.targetId) {
+            // Damage is handled by the PLAYER_DAMAGE message
+            console.log(`Projectile hit player ${data.targetId}`);
+        }
+    }
+
+    public sendPlayerAttack(weaponType: number, direction: THREE.Vector3): void {
+        if (!this.connected) {
+            this.pendingUpdates.push({
+                type: MessageType.PLAYER_ATTACK,
+                data: {
+                    playerId: this.getPlayerId(),
+                    weaponType: weaponType,
+                    direction: {
+                        x: direction.x,
+                        y: direction.y,
+                        z: direction.z
+                    }
+                }
+            });
+            return;
+        }
+        
+        this.sendMessage(MessageType.PLAYER_ATTACK, {
+            playerId: this.getPlayerId(),
+            weaponType: weaponType,
+            direction: {
+                x: direction.x,
+                y: direction.y,
+                z: direction.z
+            }
+        });
+    }
+    
+    public sendPlayerDamage(targetId: string, damage: number, isHeadshot: boolean): void {
+        if (!this.connected) {
+            this.pendingUpdates.push({
+                type: MessageType.PLAYER_DAMAGE,
+                data: {
+                    playerId: this.getPlayerId(),
+                    targetId: targetId,
+                    damage: damage,
+                    isHeadshot: isHeadshot
+                }
+            });
+            return;
+        }
+        
+        this.sendMessage(MessageType.PLAYER_DAMAGE, {
+            playerId: this.getPlayerId(),
+            targetId: targetId,
+            damage: damage,
+            isHeadshot: isHeadshot
+        });
+    }
+    
+    public sendProjectileSpawn(
+        position: THREE.Vector3, 
+        velocity: THREE.Vector3, 
+        damage: number
+    ): void {
+        if (!this.connected) {
+            this.pendingUpdates.push({
+                type: MessageType.PROJECTILE_SPAWN,
+                data: {
+                    ownerId: this.getPlayerId(),
+                    position: {
+                        x: position.x,
+                        y: position.y,
+                        z: position.z
+                    },
+                    velocity: {
+                        x: velocity.x,
+                        y: velocity.y,
+                        z: velocity.z
+                    },
+                    damage: damage
+                }
+            });
+            return;
+        }
+        
+        this.sendMessage(MessageType.PROJECTILE_SPAWN, {
+            ownerId: this.getPlayerId(),
+            position: {
+                x: position.x,
+                y: position.y,
+                z: position.z
+            },
+            velocity: {
+                x: velocity.x,
+                y: velocity.y,
+                z: velocity.z
+            },
+            damage: damage
+        });
+    }
+    
+    public sendProjectileHit(
+        projectileId: string, 
+        position: THREE.Vector3, 
+        targetId: string | null
+    ): void {
+        if (!this.connected) {
+            this.pendingUpdates.push({
+                type: MessageType.PROJECTILE_HIT,
+                data: {
+                    projectileId: projectileId,
+                    position: {
+                        x: position.x,
+                        y: position.y,
+                        z: position.z
+                    },
+                    targetId: targetId
+                }
+            });
+            return;
+        }
+        
+        this.sendMessage(MessageType.PROJECTILE_HIT, {
+            projectileId: projectileId,
+            position: {
+                x: position.x,
+                y: position.y,
+                z: position.z
+            },
+            targetId: targetId
+        });
     }
 }

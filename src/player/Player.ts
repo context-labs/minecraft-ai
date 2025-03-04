@@ -3,6 +3,8 @@ import * as THREE from 'three';
 import { World } from '../world/World';
 import { BlockType, Block } from '../world/Block';
 import { PointerLockControls } from '../utils/PointerLockControls';
+import { Weapon, WeaponType, Sword, Pistol, Rifle } from '../combat/Weapon';
+import { CombatManager } from '../combat/CombatManager';
 
 // Constants
 const PLAYER_HEIGHT = 1.8;
@@ -12,6 +14,12 @@ const GRAVITY = 20.0;
 const REACH_DISTANCE = 5.0;
 const MOUSE_SENSITIVITY = 0.002; // Default mouse sensitivity
 const MAX_VERTICAL_ANGLE = Math.PI / 2 * 0.9; // Limit vertical rotation to 90% of 90 degrees
+
+// Combat constants
+const MAX_HEALTH = 100;
+const HEALTH_REGEN_RATE = 5; // Health points per second
+const HEALTH_REGEN_DELAY = 5000; // Milliseconds before health regen starts after taking damage
+const RESPAWN_DELAY = 3000; // Milliseconds before respawning
 
 // Mining speeds for different block types (in seconds)
 const MINING_SPEEDS: Record<BlockType, number> = {
@@ -98,6 +106,25 @@ export class Player {
     private breakSound: HTMLAudioElement | null = null;
     private lastMiningSound: number = 0;
     
+    // Combat variables
+    private health: number = MAX_HEALTH;
+    private maxHealth: number = MAX_HEALTH;
+    private healthRegenRate: number = HEALTH_REGEN_RATE;
+    private lastDamageTime: number = 0;
+    public isDead: boolean = false;
+    private respawnTime: number = 0;
+    private weapons: Weapon[] = [];
+    private equippedWeapon: Weapon | null = null;
+    private equippedWeaponIndex: number = 0;
+    private isAttacking: boolean = false;
+    private attackHeld: boolean = false;
+    private healthBar: HTMLElement | null = null;
+    private damageOverlay: HTMLElement | null = null;
+    private combatManager: CombatManager | null = null;
+    
+    // Player identification
+    private id: string = Math.random().toString(36).substring(2, 15);
+    
     constructor(camera: THREE.PerspectiveCamera, scene: THREE.Scene, world: World) {
         this.camera = camera;
         this.scene = scene;
@@ -114,11 +141,23 @@ export class Player {
         
         scene.add(this.controls.getObject());
         
+        // Initialize weapons
+        this.initializeWeapons();
+        
+        // Create health UI
+        this.createHealthUI();
+        
         // Add event listeners
         document.addEventListener('click', this.onClick.bind(this));
         document.addEventListener('keydown', this.onKeyDown.bind(this));
         document.addEventListener('keyup', this.onKeyUp.bind(this));
         document.addEventListener('wheel', this.onWheel.bind(this));
+        document.addEventListener('mouseup', this.onMouseUp.bind(this));
+        
+        // Prevent context menu on right click
+        document.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+        });
         
         // Add lock/unlock event listeners
         this.controls.addEventListener('lock', this.onPointerLockChange.bind(this));
@@ -141,11 +180,37 @@ export class Player {
         // Update mining
         this.updateMining(deltaTime);
         
+        // Update health regeneration
+        this.updateHealthRegeneration(deltaTime);
+        
+        // Update weapon
+        if (this.equippedWeapon) {
+            this.equippedWeapon.update(deltaTime);
+            
+            // Handle automatic weapon firing
+            if (this.isAttacking && this.attackHeld) {
+                const weapon = this.equippedWeapon;
+                if (weapon && weapon.isReady() && weapon.isAutoFire()) {
+                    this.attackWithWeapon();
+                }
+            }
+        }
+        
         // Get camera position and direction
         const cameraPosition = this.camera.position.clone();
         const direction = this.getDirection();
         
         if (!this.controls.isLocked) {
+            return;
+        }
+        
+        // Check for respawn
+        if (this.isDead && Date.now() > this.respawnTime) {
+            this.respawn();
+        }
+        
+        // Don't process movement if dead
+        if (this.isDead) {
             return;
         }
         
@@ -210,31 +275,38 @@ export class Player {
         }
     }
     
+    private updateHealthRegeneration(deltaTime: number): void {
+        // Don't regenerate if dead or recently damaged
+        if (this.isDead || Date.now() - this.lastDamageTime < HEALTH_REGEN_DELAY) {
+            return;
+        }
+        
+        // Regenerate health
+        if (this.health < this.maxHealth) {
+            this.health += this.healthRegenRate * deltaTime;
+            
+            // Cap health at max
+            if (this.health > this.maxHealth) {
+                this.health = this.maxHealth;
+            }
+            
+            // Update health UI
+            this.updateHealthUI();
+        }
+    }
+    
     public getPosition(): THREE.Vector3 {
         return this.position.clone();
     }
     
     public getDirection(): THREE.Vector3 {
-        try {
-            if (!this.camera) {
-                console.error('Camera is null in getDirection');
-                return new THREE.Vector3(0, 0, -1); // Default direction
-            }
-            
-            const direction = new THREE.Vector3();
-            this.camera.getWorldDirection(direction);
-            
-            // Validate direction
-            if (isNaN(direction.x) || isNaN(direction.y) || isNaN(direction.z)) {
-                console.error('Invalid direction vector generated:', direction);
-                return new THREE.Vector3(0, 0, -1); // Default direction
-            }
-            
-            return direction;
-        } catch (error) {
-            console.error('Error in getDirection method:', error);
-            return new THREE.Vector3(0, 0, -1); // Default direction
-        }
+        const direction = new THREE.Vector3();
+        this.camera.getWorldDirection(direction);
+        return direction;
+    }
+    
+    public getCamera(): THREE.PerspectiveCamera {
+        return this.camera;
     }
     
     public getSelectedBlockType(): BlockType {
@@ -367,26 +439,31 @@ export class Player {
             // Debug log
             console.log('Raycast result:', rayResult);
             
-            if (!rayResult) {
-                this.stopMining();
-                return;
-            }
-            
-            // Left click: start mining block
+            // Left click: attack with weapon and/or start mining block
             if (event.button === 0) {
-                // Add defensive checks
-                if (rayResult.position && !isNaN(rayResult.position.x) && !isNaN(rayResult.position.y) && !isNaN(rayResult.position.z)) {
-                    // Start mining the block
-                    this.startMining(rayResult.position, rayResult.blockType);
-                } else {
-                    console.error('Invalid rayResult position for block breaking:', rayResult.position);
+                // Set attacking flag for automatic weapons
+                this.isAttacking = true;
+                this.attackHeld = true;
+                
+                // Attack with weapon
+                this.attackWithWeapon();
+                
+                // Also handle block mining if a block was hit
+                if (rayResult) {
+                    // Add defensive checks
+                    if (rayResult.position && !isNaN(rayResult.position.x) && !isNaN(rayResult.position.y) && !isNaN(rayResult.position.z)) {
+                        // Start mining the block
+                        this.startMining(rayResult.position, rayResult.blockType);
+                    } else {
+                        console.error('Invalid rayResult position for block breaking:', rayResult.position);
+                    }
                 }
             }
             
             // Right click: place block
             if (event.button === 2) {
                 // Add defensive checks
-                if (!rayResult.position || !rayResult.normal) {
+                if (!rayResult || !rayResult.position || !rayResult.normal) {
                     console.error('Invalid rayResult for block placement:', rayResult);
                     return;
                 }
@@ -449,9 +526,13 @@ export class Player {
                 <br />
                 <span>WASD = Move, SPACE = Jump, MOUSE = Look around</span>
                 <br />
-                <span>Left Click = Break block, Right Click = Place block</span>
+                <span>Left Click = Attack/Break block, Right Click = Place block</span>
                 <br />
                 <span>1-6 = Select block type, Mouse Wheel = Cycle through blocks</span>
+                <br />
+                <span>7-9 = Select weapons (7=Sword, 8=Pistol, 9=Rifle)</span>
+                <br />
+                <span>R = Reload weapon</span>
                 <br />
                 <span>ESC = Release mouse</span>
             `;
@@ -500,6 +581,25 @@ export class Player {
                 break;
             case 'Digit6':
                 this.setSelectedBlockType(BlockType.SAND);
+                break;
+            // Weapon selection keys
+            case 'Digit7':
+                this.equipWeapon(0); // Sword
+                break;
+            case 'Digit8':
+                this.equipWeapon(1); // Pistol
+                break;
+            case 'Digit9':
+                this.equipWeapon(2); // Rifle
+                break;
+            case 'KeyR':
+                // Reload weapon if it's a firearm
+                if (this.equippedWeapon && 
+                    (this.equippedWeapon.getType() === WeaponType.PISTOL || 
+                     this.equippedWeapon.getType() === WeaponType.RIFLE)) {
+                    // Cast to any since we don't have a Firearm type reference here
+                    (this.equippedWeapon as any).reload();
+                }
                 break;
             case 'Escape':
                 this.controls.unlock();
@@ -575,28 +675,28 @@ export class Player {
             switch (this.selectedBlockType) {
                 case BlockType.DIRT:
                     if (index === 0) slot.classList.add('selected');
-                    break;
+                break;
                 case BlockType.STONE:
                     if (index === 1) slot.classList.add('selected');
-                    break;
+                break;
                 case BlockType.GRASS:
                     if (index === 2) slot.classList.add('selected');
-                    break;
+                break;
                 case BlockType.WOOD:
                     if (index === 3) slot.classList.add('selected');
-                    break;
+                break;
                 case BlockType.LEAVES:
                     if (index === 4) slot.classList.add('selected');
-                    break;
+                break;
                 case BlockType.SAND:
                     if (index === 5) slot.classList.add('selected');
-                    break;
+                break;
                 case BlockType.WATER:
                     if (index === 6) slot.classList.add('selected');
-                    break;
+                break;
                 case BlockType.BEDROCK:
                     if (index === 7) slot.classList.add('selected');
-                    break;
+                break;
             }
         });
     }
@@ -889,4 +989,318 @@ export class Player {
             this.controls.getObject().position.set(x, y, z);
         }
     }
+
+    private initializeWeapons(): void {
+        // Create weapons
+        const sword = new Sword();
+        const pistol = new Pistol();
+        const rifle = new Rifle();
+        
+        // Set owner and scene for each weapon
+        [sword, pistol, rifle].forEach(weapon => {
+            weapon.setOwner(this);
+            weapon.setScene(this.scene);
+            
+            // Set combat manager if available
+            if (this.combatManager) {
+                weapon.setCombatManager(this.combatManager);
+            }
+        });
+        
+        // Add weapons to inventory
+        this.weapons = [sword, pistol, rifle];
+        
+        // Equip first weapon by default
+        this.equipWeapon(0);
+    }
+
+    private createHealthUI(): void {
+        // Create health bar container
+        this.healthBar = document.createElement('div');
+        this.healthBar.className = 'health-bar';
+        this.healthBar.style.position = 'absolute';
+        this.healthBar.style.bottom = '20px';
+        this.healthBar.style.left = '20px';
+        this.healthBar.style.width = '200px';
+        this.healthBar.style.height = '20px';
+        this.healthBar.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+        this.healthBar.style.border = '2px solid #fff';
+        this.healthBar.style.borderRadius = '10px';
+        this.healthBar.style.overflow = 'hidden';
+        
+        // Create health fill
+        const healthFill = document.createElement('div');
+        healthFill.className = 'health-fill';
+        healthFill.style.width = '100%';
+        healthFill.style.height = '100%';
+        healthFill.style.backgroundColor = '#0f0';
+        healthFill.style.transition = 'width 0.3s, background-color 0.3s';
+        
+        // Add health fill to container
+        this.healthBar.appendChild(healthFill);
+        
+        // Create damage overlay
+        this.damageOverlay = document.createElement('div');
+        this.damageOverlay.style.position = 'absolute';
+        this.damageOverlay.style.top = '0';
+        this.damageOverlay.style.left = '0';
+        this.damageOverlay.style.width = '100%';
+        this.damageOverlay.style.height = '100%';
+        this.damageOverlay.style.backgroundColor = 'rgba(255, 0, 0, 0)';
+        this.damageOverlay.style.pointerEvents = 'none';
+        this.damageOverlay.style.transition = 'background-color 0.5s';
+        
+        // Add UI elements to document
+        document.body.appendChild(this.healthBar);
+        document.body.appendChild(this.damageOverlay);
+    }
+
+    private onMouseUp(event: MouseEvent): void {
+        if (event.button === 0) { // Left mouse button
+            this.isAttacking = false;
+            this.attackHeld = false;
+        }
+    }
+
+    public takeDamage(amount: number, attacker: Player | null, isHeadshot: boolean = false): void {
+        if (this.isDead) return;
+        
+        // Record damage time
+        this.lastDamageTime = Date.now();
+        
+        // Apply damage
+        this.health -= amount;
+        
+        // Update health UI
+        this.updateHealthUI();
+        
+        // Show damage effect
+        this.showDamageEffect();
+        
+        // Check if dead
+        if (this.health <= 0) {
+            this.die(attacker);
+        }
+    }
+    
+    private showDamageEffect(): void {
+        if (!this.damageOverlay) return;
+        
+        // Set overlay opacity based on damage (more red when lower health)
+        const intensity = Math.max(0, 0.7 * (1 - this.health / this.maxHealth));
+        this.damageOverlay.style.backgroundColor = `rgba(255, 0, 0, ${intensity})`;
+        
+        // Fade out effect
+        setTimeout(() => {
+            if (this.damageOverlay) {
+                this.damageOverlay.style.backgroundColor = 'rgba(255, 0, 0, 0)';
+            }
+        }, 300);
+    }
+    
+    private updateHealthUI(): void {
+        if (!this.healthBar) return;
+        
+        const healthFill = this.healthBar.querySelector('.health-fill') as HTMLElement;
+        if (!healthFill) return;
+        
+        // Update health bar width
+        const healthPercent = Math.max(0, this.health / this.maxHealth * 100);
+        healthFill.style.width = `${healthPercent}%`;
+        
+        // Update color based on health
+        if (healthPercent > 60) {
+            healthFill.style.backgroundColor = '#0f0'; // Green
+        } else if (healthPercent > 30) {
+            healthFill.style.backgroundColor = '#ff0'; // Yellow
+        } else {
+            healthFill.style.backgroundColor = '#f00'; // Red
+        }
+    }
+    
+    private die(killer: Player | null): void {
+        this.isDead = true;
+        this.health = 0;
+        this.updateHealthUI();
+        
+        // Set respawn time
+        this.respawnTime = Date.now() + RESPAWN_DELAY;
+        
+        // TODO: Show death screen
+        console.log('You died!');
+        
+        // TODO: Handle death event (drop items, etc.)
+    }
+    
+    private respawn(): void {
+        this.isDead = false;
+        this.health = this.maxHealth;
+        this.updateHealthUI();
+        
+        // Reset position to spawn point
+        this.setPosition(0, 50, 0); // TODO: Use proper spawn point
+        this.velocity.set(0, 0, 0);
+        
+        console.log('Respawned!');
+    }
+    
+    public heal(amount: number): void {
+        if (this.isDead) return;
+        
+        this.health = Math.min(this.maxHealth, this.health + amount);
+        this.updateHealthUI();
+    }
+    
+    public getHealth(): number {
+        return this.health;
+    }
+    
+    public getMaxHealth(): number {
+        return this.maxHealth;
+    }
+    
+    public isDying(): boolean {
+        return this.isDead;
+    }
+    
+    public getId(): string {
+        return this.id;
+    }
+    
+    public equipWeapon(index: number): void {
+        if (index < 0 || index >= this.weapons.length || !this.weapons[index]) return;
+        
+        // Unequip current weapon with animation
+        if (this.equippedWeapon) {
+            // Start exit animation
+            this.playWeaponSwitchAnimation(false);
+            
+            // After a short delay, unequip the old weapon and equip the new one
+            setTimeout(() => {
+                // Unequip old weapon
+                this.equippedWeapon?.unequip();
+                
+                // Update equipped weapon
+                this.equippedWeaponIndex = index;
+                this.equippedWeapon = this.weapons[index];
+                
+                // Equip new weapon
+                if (this.scene) {
+                    this.equippedWeapon.equip(this.scene, this);
+                }
+                
+                // Play entry animation for new weapon
+                this.playWeaponSwitchAnimation(true);
+                
+                // Update UI
+                // TODO: Update UI to show equipped weapon
+            }, 150); // 150ms delay for weapon switch
+        } else {
+            // No weapon equipped, just equip the new one
+            this.equippedWeaponIndex = index;
+            this.equippedWeapon = this.weapons[index];
+            
+            if (this.scene) {
+                this.equippedWeapon.equip(this.scene, this);
+            }
+            
+            // Play entry animation
+            this.playWeaponSwitchAnimation(true);
+            
+            // Update UI
+            // TODO: Update UI to show equipped weapon
+        }
+        
+        console.log(`[Player] Equipped weapon: ${this.equippedWeapon.getName()}`);
+    }
+    
+    private playWeaponSwitchAnimation(isEntering: boolean): void {
+        if (!this.equippedWeapon) return;
+        
+        const model = this.equippedWeapon.getModel();
+        if (!model) return;
+        
+        const originalPosition = model.position.clone();
+        const originalRotation = model.rotation.clone();
+        
+        // Animation parameters
+        const duration = 150; // 150ms
+        const startTime = Date.now();
+        
+        // Create animation function
+        const animate = () => {
+            if (!model) return;
+            
+            const elapsed = Date.now() - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            
+            if (isEntering) {
+                // Weapon entering animation - from below view
+                model.position.y = originalPosition.y - 0.5 * (1 - progress);
+                model.rotation.x = originalRotation.x + (Math.PI / 8) * (1 - progress);
+            } else {
+                // Weapon exiting animation - drop down
+                model.position.y = originalPosition.y - 0.5 * progress;
+                model.rotation.x = originalRotation.x + (Math.PI / 8) * progress;
+            }
+            
+            // Continue animation if not complete
+            if (progress < 1) {
+                requestAnimationFrame(animate);
+            } else {
+                // Reset position if this was an entry animation
+                if (isEntering && model) {
+                    model.position.copy(originalPosition);
+                    model.rotation.copy(originalRotation);
+                }
+            }
+        };
+        
+        // Start animation
+        animate();
+    }
+    
+    public getEquippedWeapon(): Weapon | null {
+        return this.equippedWeapon;
+    }
+    
+    public attackWithWeapon(): void {
+        if (!this.equippedWeapon || this.isDead) return;
+        
+        // Get camera direction for attack
+        const direction = this.getDirection();
+        
+        // Perform attack
+        this.equippedWeapon.attack(direction, this.world);
+    }
+    
+    public setCombatManager(combatManager: CombatManager): void {
+        console.log(`[Player] Setting combat manager for player ${this.id}`);
+        this.combatManager = combatManager;
+        
+        // Update existing weapons with the combat manager
+        if (this.weapons.length > 0) {
+            this.weapons.forEach(weapon => {
+                weapon.setCombatManager(combatManager);
+            });
+        }
+    }
+
+    public isMoving(): boolean {
+        // Check if any movement keys are pressed
+        return this.moveForward || this.moveBackward || this.moveLeft || this.moveRight;
+    }
+
+    // Add these methods to support weapon sway
+    public getMouseX(): number {
+        // Since we're using PointerLockControls, we don't have direct access to mouse position
+        // Instead, we'll return a value based on the player's rotation
+        return this.controls.getObject().rotation.y;
+    }
+
+    public getMouseY(): number {
+        // Return the camera's x rotation (looking up/down)
+        return this.controls.getObject().rotation.x;
+    }
+
 } 
