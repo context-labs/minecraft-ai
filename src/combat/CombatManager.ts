@@ -153,4 +153,123 @@ export class CombatManager {
         console.log(`[CombatManager] Handling remote projectile hit: ${JSON.stringify(data)}`);
         // TODO: Implement remote projectile hit
     }
+
+    public createRemoteProjectile(
+        id: string,
+        position: THREE.Vector3,
+        velocity: THREE.Vector3,
+        damage: number,
+        ownerId: string
+    ): void {
+        console.log(`[CombatManager] Creating remote projectile with ID: ${id}`);
+        
+        // Find the owner player by ID
+        const ownerPlayer = this.players.get(ownerId);
+        
+        if (!ownerPlayer) {
+            console.warn(`[CombatManager] Owner player with ID ${ownerId} not found, cannot create projectile`);
+            return;
+        }
+        
+        // Create a new projectile with the given parameters
+        const projectile = new Projectile(
+            position,
+            velocity,
+            damage,
+            ownerPlayer,
+            this.scene,
+            this.world,
+            this.networkManager
+        );
+        
+        // Add the projectile to the manager
+        this.addProjectile(projectile);
+    }
+
+    public createImpactEffect(position: THREE.Vector3, hitPlayer: boolean): void {
+        console.log(`[CombatManager] Creating impact effect at ${position.x}, ${position.y}, ${position.z}`);
+        
+        // Create a particle effect at the impact position
+        const particleCount = hitPlayer ? 20 : 10;
+        const particleGeometry = new THREE.BufferGeometry();
+        const particleMaterial = new THREE.PointsMaterial({
+            color: hitPlayer ? 0xff0000 : 0xcccccc,
+            size: 0.05,
+            transparent: true,
+            opacity: 0.8
+        });
+        
+        const positions = new Float32Array(particleCount * 3);
+        const velocities: THREE.Vector3[] = [];
+        
+        // Initialize particles in a sphere
+        for (let i = 0; i < particleCount; i++) {
+            const i3 = i * 3;
+            positions[i3] = position.x;
+            positions[i3 + 1] = position.y;
+            positions[i3 + 2] = position.z;
+            
+            // Random velocity direction
+            const velocity = new THREE.Vector3(
+                (Math.random() - 0.5) * 2,
+                (Math.random() - 0.5) * 2,
+                (Math.random() - 0.5) * 2
+            ).normalize().multiplyScalar(0.1 + Math.random() * 0.2);
+            
+            velocities.push(velocity);
+        }
+        
+        particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        
+        const particles = new THREE.Points(particleGeometry, particleMaterial);
+        this.scene.add(particles);
+        
+        // Animate particles
+        const startTime = Date.now();
+        const duration = 500; // 500ms
+        
+        const animateParticles = () => {
+            const elapsed = Date.now() - startTime;
+            const progress = elapsed / duration;
+            
+            if (progress >= 1) {
+                // Remove particles when animation is complete
+                this.scene.remove(particles);
+                return;
+            }
+            
+            // Update particle positions
+            const positions = particleGeometry.attributes.position.array as Float32Array;
+            
+            for (let i = 0; i < particleCount; i++) {
+                const i3 = i * 3;
+                positions[i3] += velocities[i].x;
+                positions[i3 + 1] += velocities[i].y;
+                positions[i3 + 2] += velocities[i].z;
+                
+                // Apply gravity
+                velocities[i].y -= 0.01;
+            }
+            
+            particleGeometry.attributes.position.needsUpdate = true;
+            
+            // Fade out
+            particleMaterial.opacity = 0.8 * (1 - progress);
+            
+            // Continue animation
+            requestAnimationFrame(animateParticles);
+        };
+        
+        // Start animation
+        animateParticles();
+        
+        // Play impact sound
+        this.playImpactSound(hitPlayer);
+    }
+
+    private playImpactSound(hitPlayer: boolean): void {
+        const sound = new Audio(hitPlayer ? '/sounds/hit_impact.mp3' : '/sounds/bullet_impact.mp3');
+        sound.volume = 0.2;
+        sound.play().catch(e => console.error("Error playing impact sound:", e));
+    }
 } 
