@@ -3,6 +3,7 @@ import { BlockType } from '../world/Block';
 import { World } from '../world/World';
 import { Player } from '../player/Player';
 import { CombatManager } from '../combat/CombatManager';
+import { RemotePlayer } from '../player/RemotePlayer';
 
 // Message types match server
 enum MessageType {
@@ -25,414 +26,6 @@ const POSITION_UPDATE_INTERVAL = 50; // 20 updates/sec
 const POSITION_THRESHOLD = 0.03; // 3cm threshold
 const ROTATION_THRESHOLD = 0.01; // ~0.5 degree threshold
 const INTERPOLATION_DURATION = 40; // 40ms interpolation
-
-// Remote player class
-export class RemotePlayer {
-    public id: string;
-    public position: THREE.Vector3;
-    public rotation: { x: number; y: number };
-    public selectedBlockType: BlockType;
-    public username: string;
-    public mesh: THREE.Group;
-    public equippedWeaponType: number = -1; // No weapon equipped by default
-    public weaponMesh: THREE.Object3D | null = null;
-    public isAttacking: boolean = false;
-    public attackAnimationTime: number = 0;
-    public health: number = 100; // Default health
-    public isDead: boolean = false;
-    public damageEffectTime: number = 0;
-
-    private targetPosition: THREE.Vector3;
-    private previousPosition: THREE.Vector3;
-    private targetRotation: { x: number; y: number };
-    private previousRotation: { x: number; y: number };
-    private interpolationStart: number = 0;
-    private interpolationDuration: number = INTERPOLATION_DURATION;
-
-    constructor(data: any, scene: THREE.Scene, textureManager: any) {
-        this.id = data.id;
-        this.position = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
-        this.rotation = { x: data.rotation.x, y: data.rotation.y };
-        this.selectedBlockType = data.selectedBlockType;
-        this.username = data.username;
-        this.mesh = this.createPlayerMesh(textureManager);
-        
-        // Initialize health if provided
-        if (data.health !== undefined) {
-            this.health = data.health;
-        }
-        
-        // Initialize equipped weapon if provided
-        if (data.equippedWeaponType !== undefined) {
-            this.equippedWeaponType = data.equippedWeaponType;
-            this.updateWeaponMesh();
-        }
-
-        scene.add(this.mesh);
-
-        this.targetPosition = this.position.clone();
-        this.previousPosition = this.position.clone();
-        this.targetRotation = { ...this.rotation };
-        this.previousRotation = { ...this.rotation };
-
-        this.updatePositionAndRotation();
-    }
-
-    private createPlayerMesh(textureManager: any): THREE.Group {
-        const group = new THREE.Group();
-
-        const bodyGeometry = new THREE.BoxGeometry(0.6, 1.8, 0.6);
-        const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0x0000ff });
-        const bodyMesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
-
-        const headGeometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
-        const headMaterial = new THREE.MeshLambertMaterial({ color: 0xffcc99 });
-        const headMesh = new THREE.Mesh(headGeometry, headMaterial);
-        headMesh.position.y = 1.2;
-
-        const canvas = document.createElement('canvas');
-        canvas.width = 256;
-        canvas.height = 64;
-        const context = canvas.getContext('2d');
-        if (context) {
-            context.fillStyle = '#000000';
-            context.font = 'Bold 24px Arial';
-            context.textAlign = 'center';
-            context.fillText(this.username, 128, 40);
-        }
-
-        const texture = new THREE.CanvasTexture(canvas);
-        const nameTagMaterial = new THREE.SpriteMaterial({ map: texture });
-        const nameTag = new THREE.Sprite(nameTagMaterial);
-        nameTag.position.y = 2.3;
-        nameTag.scale.set(2, 0.5, 1);
-
-        group.add(bodyMesh, headMesh, nameTag);
-
-        return group;
-    }
-
-    public update(data: any): void {
-        this.previousPosition.copy(this.position);
-        this.previousRotation = { ...this.rotation };
-
-        this.targetPosition.set(data.position.x, data.position.y, data.position.z);
-        this.targetRotation = { x: data.rotation.x, y: data.rotation.y };
-
-        this.interpolationStart = performance.now();
-
-        this.selectedBlockType = data.selectedBlockType;
-        
-        // Update health if provided
-        if (data.health !== undefined) {
-            this.health = data.health;
-            this.isDead = data.isDead || false;
-        }
-        
-        // Update equipped weapon if changed
-        if (data.equippedWeaponType !== undefined && data.equippedWeaponType !== this.equippedWeaponType) {
-            this.equippedWeaponType = data.equippedWeaponType;
-            this.updateWeaponMesh();
-        }
-    }
-
-    private updatePositionAndRotation(): void {
-        this.mesh.position.copy(this.position);
-        this.mesh.rotation.y = this.rotation.y;
-
-        const head = this.mesh.children[1] as THREE.Mesh;
-        if (head) {
-            head.rotation.x = this.rotation.x;
-        }
-    }
-
-    public interpolate(timestamp: number): void {
-        const elapsed = timestamp - this.interpolationStart;
-        const t = Math.min(elapsed / this.interpolationDuration, 1.0);
-
-        this.position.lerpVectors(this.previousPosition, this.targetPosition, t);
-        this.rotation.x = THREE.MathUtils.lerp(this.previousRotation.x, this.targetRotation.x, t);
-        this.rotation.y = THREE.MathUtils.lerp(this.previousRotation.y, this.targetRotation.y, t);
-
-        this.updatePositionAndRotation();
-    }
-
-    public dispose(scene: THREE.Scene): void {
-        scene.remove(this.mesh);
-        this.mesh.traverse((object) => {
-            if (object instanceof THREE.Mesh) {
-                object.geometry.dispose();
-                if (Array.isArray(object.material)) {
-                    object.material.forEach((mat) => mat.dispose());
-                } else {
-                    object.material.dispose();
-                }
-            }
-        });
-    }
-
-    public updateWeaponMesh(): void {
-        // Remove existing weapon mesh if any
-        if (this.weaponMesh) {
-            this.mesh.remove(this.weaponMesh);
-            this.weaponMesh = null;
-        }
-        
-        // Create new weapon mesh based on type
-        if (this.equippedWeaponType >= 0) {
-            this.weaponMesh = this.createWeaponMesh(this.equippedWeaponType);
-            if (this.weaponMesh) {
-                this.mesh.add(this.weaponMesh);
-            }
-        }
-    }
-    
-    private createWeaponMesh(weaponType: number): THREE.Object3D {
-        const group = new THREE.Group();
-        
-        // Position the weapon in the player's hand
-        group.position.set(0.3, 0.5, 0.3);
-        
-        switch (weaponType) {
-            case 0: // SWORD
-                const swordGroup = new THREE.Group();
-                
-                // Sword handle
-                const handleGeometry = new THREE.BoxGeometry(0.1, 0.5, 0.1);
-                const handleMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
-                const handle = new THREE.Mesh(handleGeometry, handleMaterial);
-                
-                // Sword blade
-                const bladeGeometry = new THREE.BoxGeometry(0.1, 1, 0.02);
-                const bladeMaterial = new THREE.MeshStandardMaterial({ 
-                    color: 0xC0C0C0,
-                    metalness: 0.8,
-                    roughness: 0.2
-                });
-                const blade = new THREE.Mesh(bladeGeometry, bladeMaterial);
-                blade.position.y = 0.75;
-                
-                // Sword guard
-                const guardGeometry = new THREE.BoxGeometry(0.3, 0.1, 0.1);
-                const guardMaterial = new THREE.MeshStandardMaterial({ 
-                    color: 0xFFD700,
-                    metalness: 0.7,
-                    roughness: 0.3
-                });
-                const guard = new THREE.Mesh(guardGeometry, guardMaterial);
-                guard.position.y = 0.25;
-                
-                swordGroup.add(handle, blade, guard);
-                swordGroup.rotation.x = Math.PI / 4; // Angle the sword
-                
-                group.add(swordGroup);
-                break;
-                
-            case 1: // PISTOL
-                const pistolGroup = new THREE.Group();
-                
-                // Pistol body
-                const bodyGeometry = new THREE.BoxGeometry(0.2, 0.3, 0.6);
-                const bodyMaterial = new THREE.MeshStandardMaterial({ 
-                    color: 0x2F4F4F,
-                    metalness: 0.7,
-                    roughness: 0.3
-                });
-                const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-                
-                // Pistol grip
-                const gripGeometry = new THREE.BoxGeometry(0.15, 0.4, 0.2);
-                const gripMaterial = new THREE.MeshStandardMaterial({ 
-                    color: 0x8B4513,
-                    metalness: 0.1,
-                    roughness: 0.8
-                });
-                const grip = new THREE.Mesh(gripGeometry, gripMaterial);
-                grip.position.y = -0.35;
-                grip.position.z = 0.15;
-                
-                // Pistol barrel
-                const barrelGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.4, 16);
-                const barrelMaterial = new THREE.MeshStandardMaterial({ 
-                    color: 0x1A1A1A,
-                    metalness: 0.9,
-                    roughness: 0.1
-                });
-                const barrel = new THREE.Mesh(barrelGeometry, barrelMaterial);
-                barrel.rotation.x = Math.PI / 2;
-                barrel.position.z = 0.5;
-                
-                pistolGroup.add(body, grip, barrel);
-                
-                group.add(pistolGroup);
-                break;
-                
-            case 2: // RIFLE
-                const rifleGroup = new THREE.Group();
-                
-                // Rifle body
-                const rifleBodyGeometry = new THREE.BoxGeometry(0.2, 0.3, 1.2);
-                const rifleBodyMaterial = new THREE.MeshStandardMaterial({ 
-                    color: 0x1A1A1A,
-                    metalness: 0.7,
-                    roughness: 0.3
-                });
-                const rifleBody = new THREE.Mesh(rifleBodyGeometry, rifleBodyMaterial);
-                
-                // Rifle stock
-                const stockGeometry = new THREE.BoxGeometry(0.15, 0.25, 0.4);
-                const stockMaterial = new THREE.MeshStandardMaterial({ 
-                    color: 0x8B4513,
-                    metalness: 0.1,
-                    roughness: 0.8
-                });
-                const stock = new THREE.Mesh(stockGeometry, stockMaterial);
-                stock.position.z = -0.7;
-                
-                // Rifle barrel
-                const rifleBarrelGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.8, 16);
-                const rifleBarrelMaterial = new THREE.MeshStandardMaterial({ 
-                    color: 0x1A1A1A,
-                    metalness: 0.9,
-                    roughness: 0.1
-                });
-                const rifleBarrel = new THREE.Mesh(rifleBarrelGeometry, rifleBarrelMaterial);
-                rifleBarrel.rotation.x = Math.PI / 2;
-                rifleBarrel.position.z = 0.9;
-                
-                rifleGroup.add(rifleBody, stock, rifleBarrel);
-                
-                group.add(rifleGroup);
-                break;
-        }
-        
-        return group;
-    }
-    
-    public startAttackAnimation(weaponType: number): void {
-        this.isAttacking = true;
-        this.attackAnimationTime = 0;
-    }
-    
-    public updateAttackAnimation(deltaTime: number): void {
-        if (!this.isAttacking || !this.weaponMesh) return;
-        
-        this.attackAnimationTime += deltaTime;
-        const animationDuration = 0.3; // 300ms
-        
-        if (this.attackAnimationTime >= animationDuration) {
-            // Reset animation
-            this.isAttacking = false;
-            this.attackAnimationTime = 0;
-            this.resetWeaponPosition();
-            return;
-        }
-        
-        const progress = this.attackAnimationTime / animationDuration;
-        
-        // Apply animation based on weapon type
-        switch (this.equippedWeaponType) {
-            case 0: // SWORD
-                this.animateSwordAttack(progress);
-                break;
-            case 1: // PISTOL
-                this.animatePistolAttack(progress);
-                break;
-            case 2: // RIFLE
-                this.animateRifleAttack(progress);
-                break;
-        }
-    }
-    
-    private animateSwordAttack(progress: number): void {
-        if (!this.weaponMesh) return;
-        
-        // Swing animation
-        if (progress < 0.5) {
-            // Swing forward (0 to 0.5)
-            const swingProgress = progress * 2; // Scale to 0-1
-            this.weaponMesh.rotation.x = Math.PI / 4 - Math.PI / 2 * swingProgress;
-            this.weaponMesh.rotation.y = -Math.PI / 4 * swingProgress;
-        } else {
-            // Return (0.5 to 1)
-            const returnProgress = (progress - 0.5) * 2; // Scale to 0-1
-            this.weaponMesh.rotation.x = Math.PI / 4 - Math.PI / 2 + Math.PI / 2 * returnProgress;
-            this.weaponMesh.rotation.y = -Math.PI / 4 + Math.PI / 4 * returnProgress;
-        }
-    }
-    
-    private animatePistolAttack(progress: number): void {
-        if (!this.weaponMesh) return;
-        
-        // Recoil animation
-        if (progress < 0.25) {
-            // Quick recoil (0 to 0.25)
-            const recoilProgress = progress * 4; // Scale to 0-1
-            this.weaponMesh.position.z = 0.3 - 0.1 * recoilProgress;
-            this.weaponMesh.rotation.x = Math.PI / 16 * recoilProgress;
-        } else {
-            // Return to position (0.25 to 1)
-            const returnProgress = (progress - 0.25) * (4/3); // Scale to 0-1
-            this.weaponMesh.position.z = 0.3 - 0.1 * (1 - returnProgress);
-            this.weaponMesh.rotation.x = Math.PI / 16 * (1 - returnProgress);
-        }
-    }
-    
-    private animateRifleAttack(progress: number): void {
-        if (!this.weaponMesh) return;
-        
-        // Recoil animation
-        if (progress < 0.25) {
-            // Quick recoil (0 to 0.25)
-            const recoilProgress = progress * 4; // Scale to 0-1
-            this.weaponMesh.position.z = 0.3 - 0.15 * recoilProgress;
-            this.weaponMesh.rotation.x = Math.PI / 12 * recoilProgress;
-        } else {
-            // Return to position (0.25 to 1)
-            const returnProgress = (progress - 0.25) * (4/3); // Scale to 0-1
-            this.weaponMesh.position.z = 0.3 - 0.15 * (1 - returnProgress);
-            this.weaponMesh.rotation.x = Math.PI / 12 * (1 - returnProgress);
-        }
-    }
-    
-    private resetWeaponPosition(): void {
-        if (!this.weaponMesh) return;
-        
-        // Reset weapon position and rotation
-        this.weaponMesh.position.set(0.3, 0.5, 0.3);
-        this.weaponMesh.rotation.set(0, 0, 0);
-        
-        // Apply default rotation for sword
-        if (this.equippedWeaponType === 0) {
-            this.weaponMesh.rotation.x = Math.PI / 4;
-        }
-    }
-    
-    public showDamageEffect(): void {
-        // Add visual effect to indicate damage
-        this.damageEffectTime = 0.3; // 300ms
-        
-        // Flash the player red
-        const bodyMesh = this.mesh.children[0] as THREE.Mesh;
-        if (bodyMesh && bodyMesh.material) {
-            (bodyMesh.material as THREE.MeshLambertMaterial).color.set(0xff0000);
-        }
-    }
-    
-    public updateDamageEffect(deltaTime: number): void {
-        if (this.damageEffectTime <= 0) return;
-        
-        this.damageEffectTime -= deltaTime;
-        
-        if (this.damageEffectTime <= 0) {
-            // Reset color
-            const bodyMesh = this.mesh.children[0] as THREE.Mesh;
-            if (bodyMesh && bodyMesh.material) {
-                (bodyMesh.material as THREE.MeshLambertMaterial).color.set(0x0000ff);
-            }
-        }
-    }
-}
 
 // Chat message interface
 export interface ChatMessage {
@@ -496,6 +89,11 @@ export class NetworkManager {
             // Update damage effects
             player.updateDamageEffect(deltaTime);
         });
+        
+        // Check for collisions between projectiles and remote players
+        if (this.combatManager && this.remotePlayers.size > 0) {
+            this.combatManager.checkRemotePlayerCollisions(this.remotePlayers);
+        }
         
         // Send player updates
         this.sendPlayerUpdate();
@@ -605,18 +203,18 @@ export class NetworkManager {
 
     private handlePlayerJoin(data: any): void {
         console.log(`Player joined: ${data.username} (${data.id})`);
-
-        // Create new remote player
-        const remotePlayer = new RemotePlayer(data, this.scene, this.textureManager);
+        
+        // Create a new remote player
+        const remotePlayer = new RemotePlayer(data, this.scene);
         this.remotePlayers.set(data.id, remotePlayer);
-
-        // Display a chat message about the player joining
+        
+        // Note: We can't register RemotePlayer with CombatManager as it expects Player type
+        // Remote player collisions are handled separately in the CombatManager
+        
+        // Add chat message
         this.handleChatMessage({
             message: `has joined the game`,
-            player: {
-                id: data.id,
-                username: data.username
-            },
+            player: { id: data.id, username: data.username },
             timestamp: Date.now()
         });
     }
@@ -645,15 +243,13 @@ export class NetworkManager {
     }
 
     private handlePlayerUpdate(data: any): void {
-        console.log(`Received player update for ${data.id}`);
-        // Update remote player
         const remotePlayer = this.remotePlayers.get(data.id);
+        
         if (remotePlayer) {
             remotePlayer.update(data);
         } else {
-            // Player not found, create new remote player
-            console.log(`Creating new remote player: ${data.id}`);
-            const newPlayer = new RemotePlayer(data, this.scene, this.textureManager);
+            // Create a new remote player if it doesn't exist
+            const newPlayer = new RemotePlayer(data, this.scene);
             this.remotePlayers.set(data.id, newPlayer);
         }
     }
@@ -678,46 +274,20 @@ export class NetworkManager {
     }
 
     private handleInitialState(data: any): void {
-        console.log('Received initial state from server via WebSocket');
+        console.log('Received initial state:', data);
         
-        // If we've already initialized the world via HTTP, just update any missing information
-        const worldInitialized = this.world.isInitialized();
-        if (worldInitialized) {
-            console.log('World already initialized via HTTP, updating any missing information');
-            
-            // Update remote players
-            if (data.players && Array.isArray(data.players)) {
-                const playerId = this.getPlayerId();
-                data.players.forEach((playerData: any) => {
-                    if (playerData.id !== playerId && !this.remotePlayers.has(playerData.id)) {
-                        this.remotePlayers.set(
-                            playerData.id,
-                            new RemotePlayer(playerData, this.scene, this.textureManager)
-                        );
-                    }
-                });
-                console.log(`Added ${this.remotePlayers.size} remote players from WebSocket update`);
+        // Add all existing players
+        data.players.forEach((playerData: any) => {
+            if (playerData.id !== this.getPlayerId()) {
+                this.remotePlayers.set(
+                    playerData.id,
+                    new RemotePlayer(playerData, this.scene)
+                );
             }
-            
-            return;
-        }
+        });
         
-        // Process all existing players
-        if (data.players && Array.isArray(data.players)) {
-            const playerId = this.getPlayerId();
-            data.players.forEach((playerData: any) => {
-                if (playerData.id !== playerId) {
-                    this.remotePlayers.set(
-                        playerData.id,
-                        new RemotePlayer(playerData, this.scene, this.textureManager)
-                    );
-                }
-            });
-            console.log(`Added ${this.remotePlayers.size} remote players`);
-        } else {
-            console.warn('No player data in initial state');
-        }
-
+        console.log(`Added ${this.remotePlayers.size} remote players from initial state`);
+        
         // Process chat messages if available
         if (data.chatMessages && Array.isArray(data.chatMessages)) {
             data.chatMessages.forEach((message: ChatMessage) => {
@@ -731,7 +301,7 @@ export class NetworkManager {
         console.log('Initial player data processing complete');
         
         // If we haven't loaded the world yet, try to load it via HTTP now
-        if (!worldInitialized) {
+        if (!this.world.isInitialized()) {
             console.log('World not initialized yet, attempting to load via HTTP...');
             this.loadInitialWorldState().catch(error => {
                 console.error('Failed to load world state via HTTP after WebSocket connection:', error);
@@ -743,6 +313,22 @@ export class NetworkManager {
 
     // Handle world state chunks
     private handleWorldState(data: any): void {
+        // Update or add remote players
+        data.players.forEach((playerData: any) => {
+            if (playerData.id !== this.getPlayerId()) {
+                const remotePlayer = this.remotePlayers.get(playerData.id);
+                
+                if (remotePlayer) {
+                    remotePlayer.update(playerData);
+                } else {
+                    this.remotePlayers.set(
+                        playerData.id,
+                        new RemotePlayer(playerData, this.scene)
+                    );
+                }
+            }
+        });
+        
         // We no longer expect world state chunks via WebSocket
         console.warn('Received unexpected world state chunk via WebSocket. World state should be loaded via HTTP.');
         
@@ -979,7 +565,7 @@ export class NetworkManager {
                         if (playerData.id !== playerId) {
                             this.remotePlayers.set(
                                 playerData.id,
-                                new RemotePlayer(playerData, this.scene, this.textureManager)
+                                new RemotePlayer(playerData, this.scene)
                             );
                         }
                     });
@@ -1054,16 +640,18 @@ export class NetworkManager {
             // Handle remote player damage
             const targetPlayer = this.remotePlayers.get(targetId);
             if (targetPlayer) {
-                console.log(`Player ${targetId} took ${data.damage} damage`);
+                console.log(`Player ${targetId} took ${data.damage} damage, new health: ${data.newHealth}`);
+                
+                // Update remote player health
+                targetPlayer.health = data.newHealth;
+                
+                // Update isDead status if provided
+                if (data.isDead !== undefined) {
+                    targetPlayer.isDead = data.isDead;
+                }
                 
                 // Show damage effect on remote player
                 targetPlayer.showDamageEffect();
-                
-                // Update remote player health
-                targetPlayer.health -= data.damage;
-                if (targetPlayer.health <= 0) {
-                    targetPlayer.isDead = true;
-                }
                 
                 // Play hit sound
                 this.playHitSound(data.isHeadshot);
@@ -1103,18 +691,49 @@ export class NetworkManager {
     private handleProjectileHit(data: any): void {
         // Handle projectile hit effects
         const position = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
+        const projectileId = data.projectileId;
+        const targetId = data.targetId;
+        const isHeadshot = data.isHeadshot || false;
+        
+        // Use a shorter projectile ID in logs to reduce clutter
+        const shortProjectileId = projectileId ? projectileId.substring(0, 8) + "..." : "unknown";
+        
+        // Log hit information with clear formatting
+        if (targetId) {
+            console.log(
+                `[NetworkManager] Projectile ${shortProjectileId} hit player ${targetId}${isHeadshot ? ' (HEADSHOT)' : ''} at ` +
+                `(${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)})`
+            );
+        } else {
+            console.log(
+                `[NetworkManager] Projectile ${shortProjectileId} hit environment at ` +
+                `(${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)})`
+            );
+        }
         
         // Create hit effect at position
         if (this.combatManager) {
-            this.combatManager.createImpactEffect(position, data.targetId !== null);
+            this.combatManager.createImpactEffect(position, targetId !== null);
+            
+            // If this is a remote projectile hit, let the combat manager handle it
+            this.combatManager.handleRemoteProjectileHit({
+                position,
+                projectileId,
+                targetId,
+                isHeadshot
+            });
         }
         
-        console.log(`Projectile hit at ${position.x}, ${position.y}, ${position.z}`);
-        
         // If a player was hit, handle damage
-        if (data.targetId) {
-            // Damage is handled by the PLAYER_DAMAGE message
-            console.log(`Projectile hit player ${data.targetId}`);
+        if (targetId) {
+            // Check if the hit player is the local player
+            if (targetId === this.getPlayerId()) {
+                console.log(`[NetworkManager] Local player hit by projectile ${shortProjectileId}${isHeadshot ? ' (HEADSHOT)' : ''}`);
+                // Local player damage is handled by PLAYER_DAMAGE message
+            } else {
+                console.log(`[NetworkManager] Remote player ${targetId} hit by projectile ${shortProjectileId}${isHeadshot ? ' (HEADSHOT)' : ''}`);
+                // Remote player damage is handled by PLAYER_DAMAGE message
+            }
         }
     }
 
@@ -1174,6 +793,23 @@ export class NetworkManager {
     }
     
     public sendPlayerDamage(targetId: string, damage: number, isHeadshot: boolean): void {
+        // Get the target player to determine their new health
+        const targetPlayer = this.remotePlayers.get(targetId);
+        let newHealth = 0;
+        let isDead = false;
+        
+        if (targetPlayer) {
+            // Calculate new health (ensure it doesn't go below 0)
+            newHealth = Math.max(0, targetPlayer.health - damage);
+            isDead = newHealth <= 0;
+            
+            // Update the remote player's health locally
+            targetPlayer.health = newHealth;
+            targetPlayer.isDead = isDead;
+            
+            console.log(`Sending damage to player ${targetId}: damage=${damage}, newHealth=${newHealth}, isDead=${isDead}`);
+        }
+        
         if (!this.connected) {
             this.pendingUpdates.push({
                 type: MessageType.PLAYER_DAMAGE,
@@ -1181,6 +817,8 @@ export class NetworkManager {
                     playerId: this.getPlayerId(),
                     targetId: targetId,
                     damage: damage,
+                    newHealth: newHealth,
+                    isDead: isDead,
                     isHeadshot: isHeadshot
                 }
             });
@@ -1191,6 +829,8 @@ export class NetworkManager {
             playerId: this.getPlayerId(),
             targetId: targetId,
             damage: damage,
+            newHealth: newHealth,
+            isDead: isDead,
             isHeadshot: isHeadshot
         });
     }
@@ -1240,7 +880,8 @@ export class NetworkManager {
     public sendProjectileHit(
         projectileId: string, 
         position: THREE.Vector3, 
-        targetId: string | null
+        targetId: string | null,
+        isHeadshot: boolean = false
     ): void {
         if (!this.connected) {
             this.pendingUpdates.push({
@@ -1252,7 +893,8 @@ export class NetworkManager {
                         y: position.y,
                         z: position.z
                     },
-                    targetId: targetId
+                    targetId: targetId,
+                    isHeadshot: isHeadshot
                 }
             });
             return;
@@ -1265,7 +907,8 @@ export class NetworkManager {
                 y: position.y,
                 z: position.z
             },
-            targetId: targetId
+            targetId: targetId,
+            isHeadshot: isHeadshot
         });
     }
 

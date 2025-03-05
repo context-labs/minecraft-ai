@@ -41,7 +41,9 @@ export class CombatManager {
     }
     
     public update(deltaTime: number): void {
-        console.log(`[CombatManager] Updating combat manager with ${this.projectiles.length} projectiles`);
+        if(this.projectiles.length > 0) {
+            console.log(`[CombatManager] Updating combat manager with ${this.projectiles.length} projectiles`);
+        }
         
         // Update all projectiles
         const projectilesToRemove: Projectile[] = [];
@@ -73,28 +75,58 @@ export class CombatManager {
     }
     
     private checkProjectilePlayerCollisions(): void {
+        // Only log if we have both projectiles and players to check
+        if (this.projectiles.length > 0 && this.players.size > 0) {
+            console.log(`[CombatManager] Checking collisions for ${this.projectiles.length} projectiles against ${this.players.size} players`);
+        }
+        
         for (const projectile of this.projectiles) {
             // Skip projectiles that have already hit something
             if (projectile.hasHit) continue;
             
-            // Skip self-damage
-            if (projectile.owner && projectile.owner === projectile.owner) continue;
+            // Skip projectiles that don't have an owner
+            if (!projectile.owner) continue;
+            
+            const projectilePosition = projectile.getPosition();
+            const projectileOwner = projectile.owner;
             
             // Iterate through all players in the map
             for (const [playerId, player] of this.players.entries()) {
                 // Skip dead players
-                if (player.isDead) continue;
+                if (player.isDead) {
+                    // Only log this once per player, not for every projectile
+                    // console.log(`[CombatManager] Skipping dead player ${playerId}`);
+                    continue;
+                }
                 
-                // Skip if the projectile belongs to this player
-                if (projectile.owner === player) continue;
+                // Skip if the projectile belongs to this player (self-damage prevention)
+                if (projectileOwner === player) {
+                    // No need to log this for every projectile check
+                    // console.log(`[CombatManager] Skipping projectile owner ${playerId}`);
+                    continue;
+                }
                 
                 const playerPosition = player.getPosition();
-                const projectilePosition = projectile.getPosition();
+                
+                // Only log detailed position info when distances are close to threshold
+                // to reduce console spam
+                const projectileToPlayer = projectilePosition.distanceTo(playerPosition);
+                const isClose = projectileToPlayer < 3.0; // Only log if within 3 units
+                
+                if (isClose) {
+                    console.log(`[CombatManager] Projectile ${projectile.id.substring(0, 8)}... near player ${playerId}: distance=${projectileToPlayer.toFixed(2)}`);
+                }
                 
                 // Check headshot (smaller hitbox at head level)
                 const headPosition = playerPosition.clone().add(new THREE.Vector3(0, 1.7, 0)); // Head is ~1.7 units above feet
-                if (projectilePosition.distanceTo(headPosition) < HEAD_HITBOX_SIZE) {
-                    console.log(`[CombatManager] Headshot detected on player ${player.getId()}`);
+                const headDistance = projectilePosition.distanceTo(headPosition);
+                
+                if (isClose) {
+                    console.log(`[CombatManager] Head distance: ${headDistance.toFixed(2)}, threshold: ${HEAD_HITBOX_SIZE}`);
+                }
+                
+                if (headDistance < HEAD_HITBOX_SIZE) {
+                    console.log(`[CombatManager] HEADSHOT! Projectile ${projectile.id.substring(0, 8)}... hit player ${player.getId()} (distance: ${headDistance.toFixed(2)})`);
                     
                     // Apply damage with headshot multiplier
                     const damage = projectile.getDamage() * HEADSHOT_MULTIPLIER;
@@ -104,14 +136,20 @@ export class CombatManager {
                     this.createHitMarker(projectilePosition, true);
                     
                     // Mark projectile as hit
-                    projectile.onHit(player);
+                    projectile.onHit(player, true);
                     break;
                 }
                 
                 // Check body shot (larger hitbox)
                 const bodyPosition = playerPosition.clone().add(new THREE.Vector3(0, 0.9, 0)); // Body center is ~0.9 units above feet
-                if (projectilePosition.distanceTo(bodyPosition) < BODY_HITBOX_SIZE) {
-                    console.log(`[CombatManager] Body hit detected on player ${player.getId()}`);
+                const bodyDistance = projectilePosition.distanceTo(bodyPosition);
+                
+                if (isClose) {
+                    console.log(`[CombatManager] Body distance: ${bodyDistance.toFixed(2)}, threshold: ${BODY_HITBOX_SIZE}`);
+                }
+                
+                if (bodyDistance < BODY_HITBOX_SIZE) {
+                    console.log(`[CombatManager] BODY HIT! Projectile ${projectile.id.substring(0, 8)}... hit player ${player.getId()} (distance: ${bodyDistance.toFixed(2)})`);
                     
                     // Apply normal damage
                     const damage = projectile.getDamage();
@@ -121,7 +159,7 @@ export class CombatManager {
                     this.createHitMarker(projectilePosition, false);
                     
                     // Mark projectile as hit
-                    projectile.onHit(player);
+                    projectile.onHit(player, false);
                     break;
                 }
             }
@@ -134,24 +172,109 @@ export class CombatManager {
         // Apply damage to player
         player.takeDamage(damage, attacker, isHeadshot);
         
-        // TODO: Send damage event to network
+        // Send damage event to network if network manager is available
+        if (this.networkManager && attacker) {
+            this.networkManager.sendPlayerDamage(
+                player.getId(),
+                damage,
+                isHeadshot
+            );
+        }
     }
     
     private createHitMarker(position: THREE.Vector3, isHeadshot: boolean): void {
         console.log(`[CombatManager] Creating hit marker at position: ${position.x}, ${position.y}, ${position.z}, headshot: ${isHeadshot}`);
-        // TODO: Implement hit marker UI
-        // This would typically be a UI element that appears briefly
+        
+        // Create a hit marker UI element
+        const hitMarkerElement = document.createElement('div');
+        hitMarkerElement.className = 'hit-marker';
+        
+        // Add headshot class if it's a headshot
+        if (isHeadshot) {
+            hitMarkerElement.classList.add('headshot');
+        }
+        
+        // Add the hit marker to the DOM
+        document.body.appendChild(hitMarkerElement);
+        
+        // Remove the hit marker after a short delay
+        setTimeout(() => {
+            if (hitMarkerElement.parentNode) {
+                hitMarkerElement.parentNode.removeChild(hitMarkerElement);
+            }
+        }, 300); // 300ms duration
+        
+        // Play hit sound
+        this.playImpactSound(true);
     }
     
     // Network-related methods
     public handleRemoteProjectileSpawn(data: any): void {
         console.log(`[CombatManager] Handling remote projectile spawn: ${JSON.stringify(data)}`);
-        // TODO: Implement remote projectile spawning
+        
+        // Extract data from the message
+        const position = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
+        const velocity = new THREE.Vector3(data.velocity.x, data.velocity.y, data.velocity.z);
+        const damage = data.damage;
+        const ownerId = data.ownerId;
+        const projectileId = data.id;
+        
+        // Create a remote projectile
+        this.createRemoteProjectile(
+            projectileId,
+            position,
+            velocity,
+            damage,
+            ownerId
+        );
     }
     
     public handleRemoteProjectileHit(data: any): void {
         console.log(`[CombatManager] Handling remote projectile hit: ${JSON.stringify(data)}`);
-        // TODO: Implement remote projectile hit
+        
+        // Extract data from the message
+        const position = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
+        const projectileId = data.projectileId;
+        const targetId = data.targetId;
+        const isHeadshot = data.isHeadshot || false;
+        
+        // Find the projectile by ID (if it exists in our local simulation)
+        const projectile = this.projectiles.find(p => p.id === projectileId);
+        
+        if (projectile) {
+            console.log(`[CombatManager] Found local projectile ${projectileId}, marking as hit`);
+            // Mark the projectile as hit
+            projectile.hasHit = true;
+            
+            // If a player was hit
+            if (targetId) {
+                // Find the target player
+                const targetPlayer = this.players.get(targetId);
+                
+                if (targetPlayer) {
+                    console.log(`[CombatManager] Found target player ${targetId}, applying hit effect`);
+                    // Create hit effect on the player
+                    this.createHitMarker(position, isHeadshot);
+                } else {
+                    console.log(`[CombatManager] Target player ${targetId} not found in local players map`);
+                }
+            }
+            
+            // Create impact effect
+            this.createImpactEffect(position, targetId !== null);
+        } else {
+            console.log(`[CombatManager] Projectile ${projectileId} not found locally, creating impact effect only`);
+            // If we don't have the projectile locally, just create the impact effect
+            this.createImpactEffect(position, targetId !== null);
+            
+            // If a player was hit, create a hit marker
+            if (targetId) {
+                this.createHitMarker(position, isHeadshot);
+            }
+        }
+        
+        // Play impact sound
+        this.playImpactSound(targetId !== null);
     }
 
     public createRemoteProjectile(
@@ -187,89 +310,202 @@ export class CombatManager {
     }
 
     public createImpactEffect(position: THREE.Vector3, hitPlayer: boolean): void {
-        console.log(`[CombatManager] Creating impact effect at ${position.x}, ${position.y}, ${position.z}`);
+        console.log(`[CombatManager] Creating impact effect at ${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}, hit player: ${hitPlayer}`);
         
-        // Create a particle effect at the impact position
-        const particleCount = hitPlayer ? 20 : 10;
-        const particleGeometry = new THREE.BufferGeometry();
-        const particleMaterial = new THREE.PointsMaterial({
-            color: hitPlayer ? 0xff0000 : 0xcccccc,
-            size: 0.05,
-            transparent: true,
-            opacity: 0.8
-        });
+        // Create particle effect
+        const particleCount = hitPlayer ? 30 : 15; // More particles for player hits
+        const particleSize = hitPlayer ? 0.1 : 0.05; // Larger particles for player hits
+        const particleColor = hitPlayer ? 0xff0000 : 0xcccccc; // Red for player hits, gray for environment
         
-        const positions = new Float32Array(particleCount * 3);
-        const velocities: THREE.Vector3[] = [];
+        const particles = new THREE.Group();
+        const particleGeometry = new THREE.SphereGeometry(particleSize, 4, 4);
+        const particleMaterial = new THREE.MeshBasicMaterial({ color: particleColor });
         
-        // Initialize particles in a sphere
         for (let i = 0; i < particleCount; i++) {
-            const i3 = i * 3;
-            positions[i3] = position.x;
-            positions[i3 + 1] = position.y;
-            positions[i3 + 2] = position.z;
+            const particle = new THREE.Mesh(particleGeometry, particleMaterial);
             
-            // Random velocity direction
-            const velocity = new THREE.Vector3(
-                (Math.random() - 0.5) * 2,
-                (Math.random() - 0.5) * 2,
-                (Math.random() - 0.5) * 2
-            ).normalize().multiplyScalar(0.1 + Math.random() * 0.2);
+            // Random position within a small radius of the impact
+            const radius = 0.2;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.random() * Math.PI;
             
-            velocities.push(velocity);
+            particle.position.set(
+                position.x + radius * Math.sin(phi) * Math.cos(theta),
+                position.y + radius * Math.sin(phi) * Math.sin(theta),
+                position.z + radius * Math.cos(phi)
+            );
+            
+            // Random velocity
+            const speed = 1 + Math.random() * 2;
+            particle.userData.velocity = new THREE.Vector3(
+                (Math.random() - 0.5) * speed,
+                (Math.random() - 0.5) * speed,
+                (Math.random() - 0.5) * speed
+            );
+            
+            particles.add(particle);
         }
         
-        particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        
-        const particles = new THREE.Points(particleGeometry, particleMaterial);
         this.scene.add(particles);
         
         // Animate particles
         const startTime = Date.now();
         const duration = 500; // 500ms
         
-        const animateParticles = () => {
+        const animate = () => {
             const elapsed = Date.now() - startTime;
             const progress = elapsed / duration;
             
             if (progress >= 1) {
-                // Remove particles when animation is complete
+                // Animation complete, remove particles
                 this.scene.remove(particles);
+                particles.traverse((child) => {
+                    if (child instanceof THREE.Mesh) {
+                        child.geometry.dispose();
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(m => m.dispose());
+                        } else {
+                            child.material.dispose();
+                        }
+                    }
+                });
                 return;
             }
             
             // Update particle positions
-            const positions = particleGeometry.attributes.position.array as Float32Array;
+            particles.children.forEach((particle) => {
+                particle.position.add(particle.userData.velocity.clone().multiplyScalar(0.016)); // Assume 60fps
+                particle.userData.velocity.multiplyScalar(0.95); // Slow down over time
+                particle.scale.multiplyScalar(0.98); // Shrink over time
+            });
             
-            for (let i = 0; i < particleCount; i++) {
-                const i3 = i * 3;
-                positions[i3] += velocities[i].x;
-                positions[i3 + 1] += velocities[i].y;
-                positions[i3 + 2] += velocities[i].z;
-                
-                // Apply gravity
-                velocities[i].y -= 0.01;
-            }
-            
-            particleGeometry.attributes.position.needsUpdate = true;
-            
-            // Fade out
-            particleMaterial.opacity = 0.8 * (1 - progress);
-            
-            // Continue animation
-            requestAnimationFrame(animateParticles);
+            requestAnimationFrame(animate);
         };
         
-        // Start animation
-        animateParticles();
+        animate();
         
         // Play impact sound
         this.playImpactSound(hitPlayer);
     }
 
     private playImpactSound(hitPlayer: boolean): void {
-        const sound = new Audio(hitPlayer ? '/sounds/hit_impact.mp3' : '/sounds/bullet_impact.mp3');
-        sound.volume = 0.2;
-        sound.play().catch(e => console.error("Error playing impact sound:", e));
+        console.log(`[CombatManager] Playing impact sound, hit player: ${hitPlayer}`);
+        
+        // Play appropriate sound based on whether a player was hit
+        const soundName = hitPlayer ? 'player_hit' : 'impact';
+        
+        // Use audio system to play sound
+        // This assumes there's an audio system available
+        // You might need to adjust this based on your actual audio implementation
+        if (typeof Audio !== 'undefined') {
+            const sound = new Audio(`/sounds/${soundName}.mp3`);
+            sound.volume = 0.5;
+            sound.play().catch(e => console.error('Error playing sound:', e));
+        }
     }
-} 
+
+    // Add a method to check collisions with remote players
+    public checkRemotePlayerCollisions(remotePlayers: Map<string, any>): void {
+        if (this.projectiles.length === 0 || remotePlayers.size === 0) {
+            return; // No projectiles or remote players to check
+        }
+        
+        console.log(`[CombatManager] Checking collisions for ${this.projectiles.length} projectiles against ${remotePlayers.size} remote players`);
+        
+        for (const projectile of this.projectiles) {
+            // Skip projectiles that have already hit something
+            if (projectile.hasHit) continue;
+            
+            // Skip projectiles that don't have an owner
+            if (!projectile.owner) continue;
+            
+            const projectilePosition = projectile.getPosition();
+            const projectileOwnerId = projectile.owner.getId();
+            
+            // Check against all remote players
+            for (const [remotePlayerId, remotePlayer] of remotePlayers.entries()) {
+                // Skip if the projectile belongs to this remote player (self-damage prevention)
+                if (projectileOwnerId === remotePlayerId) {
+                    continue;
+                }
+                
+                // Skip dead remote players
+                if (remotePlayer.isDead) {
+                    continue;
+                }
+                
+                const remotePlayerPosition = remotePlayer.position;
+                
+                // Only log detailed position info when distances are close to threshold
+                const projectileToPlayer = projectilePosition.distanceTo(remotePlayerPosition);
+                const isClose = projectileToPlayer < 3.0; // Only log if within 3 units
+                
+                if (isClose) {
+                    console.log(`[CombatManager] Projectile ${projectile.id.substring(0, 8)}... near remote player ${remotePlayerId}: distance=${projectileToPlayer.toFixed(2)}`);
+                }
+                
+                // Check headshot (smaller hitbox at head level)
+                const headPosition = remotePlayerPosition.clone().add(new THREE.Vector3(0, 1.7, 0)); // Head is ~1.7 units above feet
+                const headDistance = projectilePosition.distanceTo(headPosition);
+                
+                if (isClose) {
+                    console.log(`[CombatManager] Remote head distance: ${headDistance.toFixed(2)}, threshold: ${HEAD_HITBOX_SIZE}`);
+                }
+                
+                if (headDistance < HEAD_HITBOX_SIZE) {
+                    console.log(`[CombatManager] REMOTE HEADSHOT! Projectile ${projectile.id.substring(0, 8)}... hit remote player ${remotePlayerId} (distance: ${headDistance.toFixed(2)})`);
+                    
+                    // Apply damage with headshot multiplier
+                    const damage = projectile.getDamage() * HEADSHOT_MULTIPLIER;
+                    
+                    // Send damage to network
+                    if (this.networkManager) {
+                        this.networkManager.sendPlayerDamage(
+                            remotePlayerId,
+                            damage,
+                            true // isHeadshot
+                        );
+                    }
+                    
+                    // Create hit effect
+                    this.createHitMarker(projectilePosition, true);
+                    
+                    // Mark projectile as hit
+                    projectile.onHit(null, true); // null because RemotePlayer is not a Player
+                    break;
+                }
+                
+                // Check body shot (larger hitbox)
+                const bodyPosition = remotePlayerPosition.clone().add(new THREE.Vector3(0, 0.9, 0)); // Body center is ~0.9 units above feet
+                const bodyDistance = projectilePosition.distanceTo(bodyPosition);
+                
+                if (isClose) {
+                    console.log(`[CombatManager] Remote body distance: ${bodyDistance.toFixed(2)}, threshold: ${BODY_HITBOX_SIZE}`);
+                }
+                
+                if (bodyDistance < BODY_HITBOX_SIZE) {
+                    console.log(`[CombatManager] REMOTE BODY HIT! Projectile ${projectile.id.substring(0, 8)}... hit remote player ${remotePlayerId} (distance: ${bodyDistance.toFixed(2)})`);
+                    
+                    // Apply normal damage
+                    const damage = projectile.getDamage();
+                    
+                    // Send damage to network
+                    if (this.networkManager) {
+                        this.networkManager.sendPlayerDamage(
+                            remotePlayerId,
+                            damage,
+                            false // not a headshot
+                        );
+                    }
+                    
+                    // Create hit effect
+                    this.createHitMarker(projectilePosition, false);
+                    
+                    // Mark projectile as hit
+                    projectile.onHit(null, false); // null because RemotePlayer is not a Player
+                    break;
+                }
+            }
+        }
+    }
+}

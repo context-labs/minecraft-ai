@@ -18,7 +18,7 @@ export class Projectile {
     private trailPoints: THREE.Vector3[] = [];
     private maxTrailLength: number = 10;
     private networkManager: NetworkManager | null = null;
-    private id: string;
+    public id: string;
     
     constructor(
         position: THREE.Vector3,
@@ -111,9 +111,13 @@ export class Projectile {
         // Check if projectile has expired or already hit something
         if (this.hasHit || this.hasExpired()) {
             if (this.hasHit) {
-                console.log(`[Projectile] ${this.id} has already hit something, destroying`);
+                // Only log this once when we first detect the hit
+                if (!this.mesh.userData.hitLogged) {
+                    console.log(`[Projectile] ${this.id.substring(0, 8)}... has hit something, destroying`);
+                    this.mesh.userData.hitLogged = true;
+                }
             } else {
-                console.log(`[Projectile] ${this.id} lifetime expired (${Date.now() - this.creationTime}ms), destroying`);
+                console.log(`[Projectile] ${this.id.substring(0, 8)}... lifetime expired (${Date.now() - this.creationTime}ms), destroying`);
             }
             this.destroy();
             return false;
@@ -121,7 +125,11 @@ export class Projectile {
         
         // Calculate movement based on velocity and delta time
         const movement = this.velocity.clone().multiplyScalar(deltaTime);
-        console.log(`[Projectile] ${this.id} moving: ${movement.x.toFixed(2)}, ${movement.y.toFixed(2)}, ${movement.z.toFixed(2)}`);
+        
+        // Only log significant movements to reduce spam
+        if (movement.length() > 0.5) {
+            console.log(`[Projectile] ${this.id.substring(0, 8)}... moving: ${movement.length().toFixed(2)} units`);
+        }
         
         // Store previous position for collision detection
         const previousPosition = this.position.clone();
@@ -153,15 +161,14 @@ export class Projectile {
         // Raycast to check for block collision
         const blockHit = this.world.raycast(previousPosition, direction, distance);
         if (blockHit) {
-            console.log(`[Projectile] ${this.id} hit block at position: ${blockHit.position.x.toFixed(2)}, ${blockHit.position.y.toFixed(2)}, ${blockHit.position.z.toFixed(2)}`);
+            console.log(`[Projectile] ${this.id.substring(0, 8)}... hit block at position: ${blockHit.position.x.toFixed(2)}, ${blockHit.position.y.toFixed(2)}, ${blockHit.position.z.toFixed(2)}`);
             this.position.copy(blockHit.position);
             this.onHit(null); // Hit a block
             this.destroy();
             return true;
         }
         
-        // TODO: Check collision with players
-        // This will be implemented when we have the CombatManager
+        // Player collisions are handled by the CombatManager in its checkProjectilePlayerCollisions method
         
         return false;
     }
@@ -246,30 +253,32 @@ export class Projectile {
         animate();
     }
     
-    public onHit(target: Player | null): void {
+    public onHit(target: Player | null, isHeadshot: boolean = false): void {
         // Mark as hit to prevent further collisions
         this.hasHit = true;
         
         if (target) {
-            console.log(`[Projectile] ${this.id} hit player, applying ${this.damage} damage`);
+            const hitType = isHeadshot ? "HEADSHOT" : "body hit";
+            console.log(`[Projectile] ${this.id.substring(0, 8)}... ${hitType} on player ${target.getId()}, damage=${this.damage}${isHeadshot ? " x2" : ""}`);
             
             // Apply damage to target
-            target.takeDamage(this.damage, this.owner, false); // No headshot detection yet
+            target.takeDamage(this.damage, this.owner, isHeadshot);
             
             // Send hit message to network
             if (this.networkManager) {
                 this.networkManager.sendProjectileHit(
                     this.id,
                     this.position,
-                    target.getId() // Get actual target ID
+                    target.getId(), // Get actual target ID
+                    isHeadshot
                 );
-                console.log(`[Projectile] Sent hit message to network for player hit`);
+                console.log(`[Projectile] ${this.id.substring(0, 8)}... sent hit message to network (target=${target.getId()}, isHeadshot=${isHeadshot})`);
             }
             
             // Create impact effect
             this.createImpactEffect(this.position, true);
         } else {
-            console.log(`[Projectile] ${this.id} hit environment`);
+            console.log(`[Projectile] ${this.id.substring(0, 8)}... hit environment or remote player`);
             
             // Hit environment
             // Send hit message to network
@@ -277,9 +286,10 @@ export class Projectile {
                 this.networkManager.sendProjectileHit(
                     this.id,
                     this.position,
-                    null
+                    null,
+                    false
                 );
-                console.log(`[Projectile] Sent hit message to network for environment hit`);
+                console.log(`[Projectile] ${this.id.substring(0, 8)}... sent environment hit message to network`);
             }
             
             // Create impact effect

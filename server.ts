@@ -13,6 +13,8 @@ interface Player {
     selectedBlockType: number;
     username: string;
     connectionTime?: number; // Add connection timestamp
+    health?: number; // Player health
+    isDead?: boolean; // Whether the player is dead
 }
 
 interface GameState {
@@ -83,7 +85,12 @@ enum MessageType {
     BLOCK_UPDATE = 'block_update',
     INITIAL_STATE = 'initial_state',
     WORLD_STATE = 'world_state',
-    CHAT = 'chat'
+    CHAT = 'chat',
+    // Combat-related message types
+    PLAYER_ATTACK = 'player_attack',
+    PLAYER_DAMAGE = 'player_damage',
+    PROJECTILE_SPAWN = 'projectile_spawn',
+    PROJECTILE_HIT = 'projectile_hit'
 }
 
 interface Message {
@@ -329,6 +336,25 @@ const server: ReturnType<typeof serve> = serve({
                         console.log(`[${new Date().toISOString()}] Chat message from ${playerId}: ${parsedMessage.data.message}`);
                         broadcastChatMessage(playerId, parsedMessage.data);
                         break;
+                    case MessageType.PLAYER_ATTACK:
+                        console.log(`[${new Date().toISOString()}] Player attack from ${playerId}`);
+                        broadcastPlayerAttack(playerId, parsedMessage.data);
+                        break;
+                    case MessageType.PLAYER_DAMAGE:
+                        console.log('player damage')
+                        console.log(`[${new Date().toISOString()}] Player damage from ${playerId}`);
+                        broadcastPlayerDamage(playerId, parsedMessage.data);
+                        break;
+                    case MessageType.PROJECTILE_SPAWN:
+                        console.log('projectile spawn')
+                        console.log(`[${new Date().toISOString()}] Projectile spawn from ${playerId}`);
+                        broadcastProjectileSpawn(playerId, parsedMessage.data);
+                        break;
+                    case MessageType.PROJECTILE_HIT:
+                        console.log('projectile hit')
+                        console.log(`[${new Date().toISOString()}] Projectile hit from ${playerId}`);
+                        broadcastProjectileHit(playerId, parsedMessage.data);
+                        break;
                 }
             } catch (error) {
                 console.error(`[${new Date().toISOString()}] Error processing message:`, error);
@@ -555,6 +581,110 @@ function broadcastChatMessage(playerId: string, data: any) {
         ws.send(JSON.stringify({
             type: MessageType.CHAT,
             data: chatMessage
+        }));
+    }
+}
+
+// Combat-related broadcast functions
+
+function broadcastPlayerAttack(playerId: string, data: any) {
+    const player = gameState.players.get(playerId);
+    if (!player) return;
+
+    const timestamp = Date.now();
+    const attackData = {
+        ...data,
+        playerId,
+        timestamp
+    };
+
+    // Broadcast to all other players
+    for (const [id, ws] of connections.entries()) {
+        if (id !== playerId) {
+            ws.send(JSON.stringify({
+                type: MessageType.PLAYER_ATTACK,
+                data: attackData
+            }));
+        }
+    }
+}
+
+function broadcastPlayerDamage(playerId: string, data: any) {
+    const player = gameState.players.get(playerId);
+    if (!player) return;
+
+    // Update player health in game state
+    const targetId = data.targetId;
+    const targetPlayer = gameState.players.get(targetId);
+    
+    if (targetPlayer) {
+        console.log(`[${new Date().toISOString()}] Player ${targetId} health before: ${targetPlayer.health || 100}`);
+        
+        // Update target player's health
+        targetPlayer.health = data.newHealth;
+        
+        // Update isDead status if applicable
+        if (data.isDead !== undefined) {
+            targetPlayer.isDead = data.isDead;
+        }
+        
+        console.log(`[${new Date().toISOString()}] Player ${targetId} took ${data.damage} damage from ${playerId}, new health: ${targetPlayer.health}, isDead: ${targetPlayer.isDead}`);
+    }
+
+    const timestamp = Date.now();
+    const damageData = {
+        ...data,
+        attackerId: playerId,
+        timestamp
+    };
+
+    // Broadcast to all players
+    for (const [id, ws] of connections.entries()) {
+        ws.send(JSON.stringify({
+            type: MessageType.PLAYER_DAMAGE,
+            data: damageData
+        }));
+    }
+}
+
+function broadcastProjectileSpawn(playerId: string, data: any) {
+    const player = gameState.players.get(playerId);
+    if (!player) return;
+
+    const timestamp = Date.now();
+    const projectileData = {
+        ...data,
+        ownerId: playerId,
+        timestamp
+    };
+
+    // Broadcast to all other players
+    for (const [id, ws] of connections.entries()) {
+        if (id !== playerId) {
+            ws.send(JSON.stringify({
+                type: MessageType.PROJECTILE_SPAWN,
+                data: projectileData
+            }));
+        }
+    }
+}
+
+function broadcastProjectileHit(playerId: string, data: any) {
+    const player = gameState.players.get(playerId);
+    if (!player) return;
+
+    const timestamp = Date.now();
+    const hitData = {
+        ...data,
+        ownerId: playerId,
+        timestamp
+    };
+
+    // Broadcast to all players
+    for (const [id, ws] of connections.entries()) {
+        ws.send(JSON.stringify({
+            type: MessageType.PROJECTILE_HIT,
+            data: hitData
         }));
     }
 }
